@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>JobPilot Remote · Pair your phone</title>
+    <link rel="stylesheet" href="/remote-setup.css" />
+    <script defer src="/remote-setup.js"></script>
+  </head>
+  <body>
+    <main>
+      <a href="/">← JobPilot dashboard</a>
+      <p class="eyebrow">PHONE AND TABLET ACCESS</p>
+      <h1>Remote application access</h1>
+      <p class="lead">
+        Pair a device to sign in or complete verification in the worker’s browser. The worker waits
+        until you complete the step and resume.
+      </p>
+      <section>
+        <div class="row">
+          <h2>Remote access</h2>
+          <span id="status" role="status">Checking…</span>
+        </div>
+        <p id="message">Connecting to your local worker.</p>
+        <div class="actions">
+          <button id="enable">Enable / reconnect</button
+          ><button id="disable" class="secondary">Disable</button
+          ><button id="revoke" class="secondary">Sign out paired devices</button>
+        </div>
+      </section>
+      <section id="pairing" hidden>
+        <h2>Pair your phone</h2>
+        <div class="pair-grid">
+          <img id="qr" alt="Scan to pair this phone with JobPilot" />
+          <div>
+            <p>Scan this code with your phone camera, or open the private link on your device.</p>
+            <a id="pairLink" target="_blank" rel="noreferrer">Open remote application browser ↗</a
+            ><button id="copy" class="secondary">Copy private link</button>
+            <p class="small">
+              This link grants control of the active application browser. Keep it private.
+            </p>
+          </div>
+        </div>
+        <ol>
+          <li>Open the link and pair the device.</li>
+          <li>
+            Tap <strong>Enable notifications</strong> in the portal. On iPhone, add the page to your
+            Home Screen first.
+          </li>
+          <li>
+            When notified, complete sign-in or enter the code, then tap
+            <strong>Resume application</strong>.
+          </li>
+        </ol>
+      </section>
+      <section>
+        <h2>Waiting browser sessions</h2>
+        <div id="cases">No waiting browser sessions.</div>
+      </section>
+      <p class="small">
+        Your PC and JobPilot must stay on and connected. This HTTPS address lasts for the current
+        tunnel session; reconnecting creates a new address. A stable address requires a named
+        Cloudflare tunnel.
+      </p>
+      <p id="error" role="alert"></p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+include LICENSE THIRD_PARTY_NOTICES.md README.md
+include launcher.py requirements.lock pyproject.toml setup.py
+include package.json package-lock.json .prettierrc.json
+recursive-include web *.html *.css *.js
+recursive-include remote_web *.html *.css *.js *.webmanifest *.svg *.png
+recursive-include assets *.ico
+recursive-include scripts *.py *.ps1
+recursive-include docs *.md *.png
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod]

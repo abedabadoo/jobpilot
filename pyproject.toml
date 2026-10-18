@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jobpilot-local"
+version = "1.0.0"
+description = "A local Windows job search and application tracker with browser handoff and receipt verification."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{name = "abedabadoo"}]
+keywords = ["job-search", "automation", "playwright", "fastapi", "windows"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+]
+dependencies = [
+  "beautifulsoup4==4.15.0",
+  "cryptography==50.0.2",
+  "fastapi==0.143.0",
+  "httpx==0.28.1",
+  "keyring==25.7.0",
+  "lxml==6.1.3",
+  "pandas==3.0.6",
+  "pillow==12.3.0",
+  "playwright==1.63.0",
+  "pystray==0.19.5; sys_platform == 'win32'",
+  "python-dateutil==2.9.0.post0",
+  "python-docx==1.2.0",
+  "python-jobspy==1.3.0",
+  "pythonnet==3.2.1; sys_platform == 'win32'",
+  "pywebpush==2.5.0",
+  "pywebview==6.2.1; sys_platform == 'win32'",
+  "qrcode==8.2",
+  "reportlab==5.0.1",
+  "requests==2.34.2",
+  "tzdata==2026.5",
+  "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = ["build==1.6.1", "pypdf==6.20.1", "pytest==9.1.1", "ruff==0.17.1"]
+build = ["pyinstaller==6.22.3"]
+
+[project.scripts]
+jobpilot-service = "jobpilot.service:main"
+
+[project.urls]
+Repository = "https://github.com/abedabadoo/jobpilot"
+Issues = "https://github.com/abedabadoo/jobpilot/issues"
+
+[tool.setuptools]
+packages = ["jobpilot"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+jobpilot = ["candidate.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = ["build", "dist", ".venv", "data", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.format]
+quote-style = "double"

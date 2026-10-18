@@ -1,0 +1,73 @@
+{
+  "sample_profile": true,
+  "notice": "Fictional sample data. Replace this profile with your own information before searching or applying.",
+  "name": "Jordan Morgan",
+  "first_name": "Jordan",
+  "last_name": "Morgan",
+  "email": "jordan.morgan@example.com",
+  "phone": "+1 (202) 555-0142",
+  "location": "Cincinnati, OH, USA",
+  "linkedin": "https://example.com/jordan-morgan",
+  "experience": [
+    {
+      "company": "Northstar Systems",
+      "title": "Security Engineer",
+      "start": "January 2024",
+      "end": "September 2026",
+      "location": "Cincinnati, OH, USA",
+      "facts": [
+        {
+          "id": "northstar-iam",
+          "text": "Reviewed AWS IAM policies and automated access-key rotation for service accounts."
+        },
+        {
+          "id": "northstar-audit",
+          "text": "Maintained SOC 2 and ISO 27001 evidence records for access reviews, logging, and cloud configuration."
+        },
+        {
+          "id": "northstar-response",
+          "text": "Documented incident-response procedures and tested alert routing during team exercises."
+        },
+        {
+          "id": "northstar-automation",
+          "text": "Wrote Python scripts to summarize vulnerability scan results and track remediation work."
+        }
+      ]
+    },
+    {
+      "company": "MapleWorks",
+      "title": "Security Analyst",
+      "start": "June 2022",
+      "end": "December 2023",
+      "location": "Cincinnati, OH, USA",
+      "facts": [
+        {
+          "id": "mapleworks-monitoring",
+          "text": "Investigated security monitoring alerts and maintained triage notes for the operations team."
+        },
+        {
+          "id": "mapleworks-scanning",
+          "text": "Scheduled OWASP ZAP scans in a test environment and documented findings for engineering review."
+        },
+        {
+          "id": "mapleworks-access",
+          "text": "Supported periodic user-access reviews and documented account changes in the ticketing system."
+        }
+      ]
+    }
+  ],
+  "skills": [
+    "AWS", "IAM", "Python", "Linux", "ISO 27001", "SOC 2",
+    "Incident response", "Vulnerability management", "OWASP ZAP"
+  ],
+  "certifications": ["CompTIA Security+ (fictional example)"],
+  "education": [
+    {
+      "institution": "Example University",
+      "degree": "Bachelor of Science in Information Systems",
+      "start": "2018",
+      "end": "2022",
+      "gpa": "3.5"
+    }
+  ]
+}

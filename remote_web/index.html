@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#101b22" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="JobPilot" />
+    <title>JobPilot · Application browser</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a href="/" class="brand"
+        ><img src="/icons/icon.svg" alt="" width="32" height="32" />JobPilot</a
+      ><span class="private-label">Application browser</span
+      ><button id="logout" class="quiet" hidden>Unpair device</button>
+    </header>
+    <main>
+      <section class="intro">
+        <p class="eyebrow">REMOTE APPLICATION BROWSER</p>
+        <h1>Complete a waiting application</h1>
+        <p>Sign in or complete verification in the application browser running on your PC.</p>
+      </section>
+      <p id="connection-status" class="status" role="status">Connecting to JobPilot…</p>
+      <section id="pairing" class="panel empty" hidden>
+        <h2>Pair this device</h2>
+        <p>
+          Open the private pairing link shown in JobPilot on your PC. Keep that link to yourself.
+        </p>
+        <p>
+          If you opened JobPilot from your Home Screen, paste the same link or pairing code below.
+        </p>
+        <form id="manual-pair-form" class="entry-form">
+          <label for="manual-pair-input">Private pairing link or code</label>
+          <div class="input-row">
+            <input
+              id="manual-pair-input"
+              type="password"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              maxlength="2048"
+              placeholder="Paste your private link or code"
+              required
+            /><button type="submit">Pair this device</button>
+          </div>
+          <p class="field-hint">The box is cleared when you send it.</p>
+        </form>
+        <p id="pairing-error" role="alert"></p>
+      </section>
+      <div id="paired-content" hidden>
+        <div class="workspace">
+          <aside class="panel cases-panel">
+            <div class="section-heading">
+              <h2>Applications</h2>
+              <span id="case-count" class="count">0</span>
+            </div>
+            <div id="cases"></div>
+            <p id="empty-cases" class="muted" hidden>
+              No applications are waiting. You can leave this page open.
+            </p>
+          </aside>
+          <section id="browser-panel" class="panel browser-panel" hidden>
+            <div class="browser-heading">
+              <div>
+                <p id="case-company" class="eyebrow"></p>
+                <h2 id="case-title"></h2>
+                <p id="case-state" class="muted"></p>
+              </div>
+              <button id="refresh" class="quiet">Refresh view</button>
+            </div>
+            <p id="case-url" class="site-url"></p>
+            <p id="case-note" class="muted"></p>
+            <p id="submitted-warning" class="warning" hidden>
+              A submission was already attempted. Finish only the verification shown here. A receipt
+              is still needed to confirm the application.
+            </p>
+            <p id="frame-status" class="muted" role="status">Loading the browser view…</p>
+            <div id="viewport" class="viewport">
+              <img
+                id="browser-frame"
+                alt="Current application browser. Tap a field or button to use it."
+                draggable="false"
+                hidden
+              />
+            </div>
+            <p class="tap-hint">
+              Tap the browser image to click. Use the controls below to type or scroll.
+            </p>
+            <div id="controls">
+              <div class="button-row">
+                <button data-scroll="-650" class="secondary">↑ Scroll up</button
+                ><button data-scroll="650" class="secondary">↓ Scroll down</button
+                ><button data-key="Tab" class="secondary">Next field</button
+                ><button data-key="Shift+Tab" class="secondary">Previous field</button>
+              </div>
+              <form id="text-form" class="entry-form">
+                <label for="text-input">Type into the selected field</label>
+                <div class="input-row">
+                  <input
+                    id="text-input"
+                    type="password"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    maxlength="4096"
+                    placeholder="Text or password"
+                    required
+                  /><button type="submit">Type</button>
+                </div>
+                <p class="field-hint">
+                  Tap the field in the image first. What you type is cleared from this box after
+                  sending.
+                </p>
+              </form>
+              <form id="code-form" class="entry-form">
+                <label for="code-input">Verification code</label>
+                <div class="input-row">
+                  <input
+                    id="code-input"
+                    type="password"
+                    autocomplete="one-time-code"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    maxlength="32"
+                    placeholder="Code from your email or phone"
+                    required
+                  /><button type="submit">Send code</button>
+                </div>
+              </form>
+              <div class="button-row key-row">
+                <button data-key="Enter" class="secondary">Enter</button
+                ><button data-key="Backspace" class="secondary">Backspace</button
+                ><button data-key="Control+A" class="secondary">Select all</button
+                ><button data-key="Escape" class="secondary">Escape</button>
+              </div>
+              <p id="input-error" class="error" role="alert" hidden></p>
+              <div class="resume-row">
+                <button id="resume">Resume application</button
+                ><button id="cancel" class="quiet danger">Cancel this session</button>
+              </div>
+              <p class="field-hint">
+                Resume checks whether the step is complete. A verification screen alone does not
+                confirm a submission.
+              </p>
+            </div>
+          </section>
+          <section id="choose-case" class="panel empty">
+            <h2>Select an application</h2>
+            <p>Select an application to see its live browser.</p>
+          </section>
+        </div>
+        <section class="panel notifications">
+          <div>
+            <h2>Application notifications</h2>
+            <p id="push-status" class="muted">
+              Get a notification when an application needs sign-in or verification.
+            </p>
+            <p class="field-hint">
+              On iPhone or iPad, add JobPilot to your Home Screen, open it there, then enable
+              notifications.
+            </p>
+          </div>
+          <div class="notification-actions">
+            <button id="enable-push" class="secondary">Enable notifications</button
+            ><button id="test-push" class="quiet" hidden>Send test</button
+            ><button id="disable-push" class="quiet" hidden>Turn off</button>
+          </div>
+        </section>
+      </div>
+      <noscript
+        ><p class="panel">
+          Turn on JavaScript to pair this device and use the application browser.
+        </p></noscript
+      >
+    </main>
+    <footer>Only the application browser is shared here. Keep your pairing link private.</footer>
+  </body>
+</html>

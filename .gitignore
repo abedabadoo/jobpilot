@@ -1,0 +1,43 @@
+# Local state and applicant files
+data/
+applications/
+evidence/
+receipts/
+logs/
+resources/
+installed_paths.json
+*.sqlite
+*.sqlite-*
+*.db
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+remote-*.json
+!tests/**
+
+# Python and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+_internal/
+*.exe
+*.dll
+*.pyd
+*.spec
+
+# Frontend tooling and editor state
+node_modules/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

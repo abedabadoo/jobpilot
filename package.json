@@ -1,0 +1,13 @@
+{
+  "name": "jobpilot-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Formatting tools for the JobPilot dashboard and remote portal.",
+  "scripts": {
+    "format": "prettier --write web remote_web",
+    "format:check": "prettier --check web remote_web"
+  },
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}
