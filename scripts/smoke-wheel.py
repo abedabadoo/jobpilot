@@ -49,7 +49,16 @@ try:
         response = dashboard.get(route)
         assert response.status_code == 200, f"Dashboard {route}: {response.status_code}"
         assert response.content, f"Empty dashboard {route}"
-        assert response.headers["content-type"].startswith(content_type)
+        actual = response.headers.get("content-type", "")
+        media_type = actual.partition(";")[0].strip().lower()
+        allowed = (
+            ("text/javascript", "application/javascript")
+            if content_type == "text/javascript"
+            else (content_type,)
+        )
+        assert media_type in allowed, (
+            f"Dashboard {route}: Content-Type {actual!r}, expected {allowed}"
+        )
 finally:
     dashboard.close()
 
@@ -73,7 +82,16 @@ try:
         response = portal.get(route)
         assert response.status_code == 200, f"Portal {route}: {response.status_code}"
         assert response.content, f"Empty portal {route}"
-        assert response.headers["content-type"].startswith(content_type)
+        actual = response.headers.get("content-type", "")
+        media_type = actual.partition(";")[0].strip().lower()
+        allowed = (
+            ("text/javascript", "application/javascript")
+            if content_type == "text/javascript"
+            else (content_type,)
+        )
+        assert media_type in allowed, (
+            f"Portal {route}: Content-Type {actual!r}, expected {allowed}"
+        )
 finally:
     portal.close()
 
