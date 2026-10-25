@@ -36,7 +36,7 @@ dependencies = [
   "pywebpush==2.5.0",
   "pywebview==6.2.1; sys_platform == 'win32'",
   "qrcode==8.2",
-  "reportlab==5.0.1",
+  "reportlab==5.1.0",
   "requests==2.34.2",
   "tzdata==2026.5",
   "uvicorn==0.54.0",
