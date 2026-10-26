@@ -651,6 +651,7 @@
     });
     [
       ['Certifications', profile.certifications],
+      ['Interests', profile.interests],
       ['Education', profile.education],
     ].forEach(([label, entries]) => {
       if (!entries || !entries.length) return;

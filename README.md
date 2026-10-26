@@ -25,7 +25,7 @@ Search and document preparation run locally and can continue while the dashboard
 
 The resume uses a single-column layout with readable type, clear section rules, aligned role headers, and PDF and Word exports. Cover letters use the role, employer, career history, and relevant job keywords. The role detail lists extracted tools and disciplines, including terms beyond the current profile's skill list.
 
-JobPilot ranks saved experience and includes relevant job terms in the tailored skills section and cover-letter draft. It preserves employer names, dates, education, and career achievements from the saved profile. Local Ollama ranks career facts and drafts the cover letter; document preparation has a deterministic fallback when the model is unavailable.
+JobPilot selects and rewrites relevant experience bullets, adds job terms, and removes less useful skills when tailoring a resume. Employer names, dates, education, and career achievements come from the saved profile. Interests stay beneath Skills & Certifications in every resume. Local Ollama handles tailoring and cover letters, with a deterministic fallback when the model is unavailable.
 
 Document generation does not submit an application. Review and edit the exports before using them.
 
