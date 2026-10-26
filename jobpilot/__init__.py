@@ -1,3 +1,3 @@
-"""JobPilot local career operations."""
+"""Job discovery, tailored documents, and manual application tracking."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

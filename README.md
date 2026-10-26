@@ -4,35 +4,40 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-JobPilot is a Windows application for finding jobs, preparing application documents from saved career facts, and submitting supported forms with a verified receipt.
+JobPilot is a Windows job-search assistant. It finds opportunities, highlights job-description keywords, prepares tailored resumes and cover letters, and tracks the applications you submit yourself.
 
 ![JobPilot dashboard](docs/images/dashboard.png)
 
 Dashboard shown with fictional example data.
 
-The desktop dashboard and worker run locally. Searches and applications have separate pause controls, and the worker can continue while the dashboard is closed to the system tray.
+## The workflow
 
-## What it does
+1. Search job boards and public employer feeds, import a posting, or sync email alerts.
+2. Open a role to see its fit score, description, keywords, and application documents.
+3. Review the documents and open the original posting in your usual browser, using its saved sessions.
+4. Click **Applied?** when you finish. The role moves from Opportunities to Applied.
 
-- Collects listings through job-board searches, public Greenhouse, Lever and Ashby feeds, job URLs, email alerts and optional IMAP access.
-- Assesses roles against saved preferences and prepares PDF and Word resumes and cover letters.
-- Uses the local Ollama `qwen3.5:9b` model to select relevant **existing career fact IDs** and identify gaps. Document text comes from saved facts and templates; unavailable or invalid model output falls back to deterministic fact selection.
-- Fills recognized application fields using the saved profile and explicitly supplied screening answers.
-- Holds unfamiliar forms, missing answers, login challenges and uncertain outcomes for review.
-- Offers optional paired-device access to a retained application browser for sign-in, CAPTCHA or verification steps.
-- Records application artifacts, activity and CSV reports in local storage.
+Each opportunity also has **Review** and **Remove** controls. Removed jobs are excluded from later imports and searches. The Problems workspace records issues in plain language and links to the affected job.
+
+Search and document preparation run locally and can continue while the dashboard is closed to the system tray. Opening a job link is independent of the document worker.
+
+## Documents and keywords
+
+The resume uses a single-column layout with readable type, clear section rules, aligned role headers, and PDF and Word exports. Cover letters use the role, employer, career history, and relevant job keywords. The role detail lists extracted tools and disciplines, including terms beyond the current profile's skill list.
+
+JobPilot ranks saved experience and includes relevant job terms in the tailored skills section and cover-letter draft. It preserves employer names, dates, education, and career achievements from the saved profile. Local Ollama ranks career facts and drafts the cover letter; document preparation has a deterministic fallback when the model is unavailable.
+
+Document generation does not submit an application. Review and edit the exports before using them.
+
+## Gmail and email alerts
+
+The Email workspace supports a read-only inbox connection, **Connect & test**, and **Sync now**, with the last check time, messages checked, job links found, and import counts. Credentials stay in Windows Credential Manager. Reading uses a read-only mailbox and `BODY.PEEK`, so messages are not marked read. A scan limit and date window keep each sync bounded; the interface reports when more messages exist than were checked.
+
+For Gmail, use a Google app password with `imap.gmail.com` on port `993`. A normal Google account password is not suitable. See [email setup](docs/setup.md#email-alerts). EML alerts can also be imported without a persistent inbox connection.
 
 ## Requirements and setup
 
-Use Windows with Python 3.13, Ollama, Playwright Chromium and Microsoft Edge WebView2 for the desktop window. The setup process downloads dependencies, a browser and the model; job searches and employer sites require internet access.
-
-Start with [Windows setup](docs/setup.md). It covers running a source checkout, building the desktop executable and installing it for the current Windows user. Only run one JobPilot installation or source instance at a time: the default service ports are shared.
-
-The initial profile is fictional, and search and submissions start paused. Replace the profile, review the career facts and save your own screening answers before enabling applications. Never use the example profile to submit an application.
-
-## Quick start
-
-With Python 3.13 installed, run in PowerShell:
+Use Windows and Python 3.13. The desktop window needs Microsoft Edge WebView2, and its launcher manages local Ollama for document preparation. Browser automation dependencies remain for dormant legacy modules and their regression tests.
 
 ```powershell
 git clone https://github.com/abedabadoo/jobpilot.git
@@ -40,23 +45,19 @@ cd jobpilot
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,build]"
 $env:JOBPILOT_DATA_DIR = Join-Path $env:LOCALAPPDATA 'JobPilot-Source\data'
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:JOBPILOT_DATA_DIR 'browsers'
-.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe -m jobpilot.service --port 8765
 ```
 
-Open `http://127.0.0.1:8765` in your browser. This starts the dashboard and worker with search and submissions paused. For Ollama setup, the desktop window, installation and recovery, follow [Windows setup](docs/setup.md).
+Open `http://127.0.0.1:8765`. Replace the fictional starter profile before generating personal application documents. Search starts paused. Only run one installation or source instance at a time because the default service ports are shared.
 
-## Application outcomes
+[Windows setup](docs/setup.md) covers the desktop launcher, building, installation, email, and backups. See [architecture](docs/architecture.md), [development](docs/development.md), and [troubleshooting](docs/troubleshooting.md).
 
-Preparing documents or clicking a submit control does not confirm an application. JobPilot requires a new employer receipt associated with the application to mark an automated submission **confirmed**. A possible submission without that receipt stays **uncertain** and is held against automatic retries. Outcomes verified manually are tracked separately.
+## Legacy features
 
-Unknown eligibility or sensitive answers are not inferred. Supported forms can still change, reject automation or require your attention. Search availability depends on upstream sites and their access restrictions; JobPilot cannot guarantee listings, submissions, interviews or hiring outcomes.
+Automatic application submission and remote access are dormant. The active assistant mode disables both, including for installations with older enabled settings. Their modules and regression tests remain in the repository, but the dashboard does not offer them as an application workflow.
 
-## Data and remote access
+## Data and license
 
-Profiles, screening answers, browser sessions, documents and application history are stored on the PC. Employer sites receive the information submitted to them. Optional remote access sends the application browser view through a temporary Cloudflare Quick Tunnel, and optional notifications use the paired browser's push service. Treat pairing links and the data directory as private.
+Profiles, documents, inbox connection settings, and application history stay in the local data directory. Public job searches and inbox sync require internet access. Job pages open in your default browser.
 
-See [remote access](docs/remote-access.md), [troubleshooting](docs/troubleshooting.md), [architecture](docs/architecture.md) and [development](docs/development.md). Report vulnerabilities using [SECURITY.md](SECURITY.md).
-
-License terms are in [LICENSE](LICENSE). Dependency and bundled-tool attribution is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Report vulnerabilities using [SECURITY.md](SECURITY.md). License terms are in [LICENSE](LICENSE); dependency attribution is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -13,6 +13,7 @@ def setup_api(tmp_path, monkeypatch):
     import jobpilot.service as service
 
     service = importlib.reload(service)
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     service.store.set("settings", {**service.settings(), "submission_enabled": True})
     client = TestClient(service.app)
     headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}

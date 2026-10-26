@@ -29,6 +29,8 @@ _search_warnings: list[dict] = []
 _errors_lock = threading.Lock()
 _CREDENTIAL_SERVICE = "JobPilot/IMAP"
 _MAX_BODY = 4 * 1024 * 1024
+_email_result: dict = {}
+_email_lock = threading.Lock()
 
 
 def _validate_host(host: str) -> None:
@@ -268,6 +270,59 @@ def _alert_job_link(url: str) -> bool:
         return False
 
 
+def _alert_destination(url: str) -> str:
+    for _ in range(3):
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if host in {
+            "www.google.com",
+            "google.com",
+            "www.linkedin.com",
+            "linkedin.com",
+        } or host.endswith(".safelinks.protection.outlook.com"):
+            query = parse_qs(parts.query)
+            nested = next((query[key][0] for key in ("url", "q", "target") if query.get(key)), "")
+            if nested.startswith(("https://", "http://")):
+                url = nested
+                continue
+        break
+    return (
+        _canonical_link(url)
+        if _alert_job_link(url) or re.search(r"/comm/jobs/view/\d+", url)
+        else url
+    )
+
+
+def _alert_title_company(title: str, subject: str, url: str) -> tuple[str, str]:
+    title = re.sub(r"\s+", " ", title).strip()
+    if not title or title.casefold() in {
+        "view job",
+        "view jobs",
+        "apply",
+        "apply now",
+        "see job",
+        "learn more",
+    }:
+        title = (
+            subject
+            if re.search(
+                r"\b(?:at|engineer|analyst|manager|specialist|developer|consultant)\b",
+                subject,
+                re.I,
+            )
+            else "Job from email alert"
+        )
+    match = re.match(r"(.+?)\s+(?:at|@)\s+(.+)", title, re.I)
+    if match:
+        return match[1].strip(), match[2].strip()
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    company = ""
+    if host.endswith((".lever.co", ".ashbyhq.com", ".greenhouse.io")):
+        company = parts.path.strip("/").split("/")[0].replace("-", " ").title()
+    return title, company
+
+
 def import_eml(text: str | bytes) -> list[dict]:
     if len(text) > _MAX_BODY:
         raise ValueError("Email exceeds the import limit")
@@ -275,6 +330,7 @@ def import_eml(text: str | bytes) -> list[dict]:
         text if isinstance(text, bytes) else text.encode(), policy=policy.default
     )
     candidates, description_parts = [], []
+    contexts = {}
     for part in message.walk():
         if part.get_content_disposition() == "attachment" or part.get_content_type() not in (
             "text/plain",
@@ -289,6 +345,9 @@ def import_eml(text: str | bytes) -> list[dict]:
             soup = BeautifulSoup(body, "html.parser")
             for anchor in soup.find_all("a", href=True):
                 candidates.append((anchor["href"], anchor.get_text(" ", strip=True)))
+                card = anchor.find_parent(["article", "tr", "li"]) or anchor.parent
+                if card:
+                    contexts[anchor["href"]] = card.get_text(" ", strip=True)[:12000]
             body = soup.get_text(" ", strip=True)
         description_parts.append(str(body))
         candidates.extend(
@@ -296,20 +355,28 @@ def import_eml(text: str | bytes) -> list[dict]:
         )
     jobs, seen = [], set()
     for url, title in candidates:
+        context = contexts.get(url)
+        try:
+            url = _alert_destination(url)
+        except ValueError:
+            continue
         if not _alert_job_link(url):
             continue
         url = _canonical_link(url)
         if url in seen:
             continue
         seen.add(url)
+        title, company = _alert_title_company(title, str(message.get("Subject", "")), url)
         jobs.append(
             _job(
                 "email",
                 url,
-                title or "Job from email alert",
-                description="\n".join(description_parts)[:20000],
+                title,
+                company=company,
+                description=context or "\n".join(description_parts)[:20000],
                 alert_received_at=str(message.get("Date", "")),
                 alert_subject=str(message.get("Subject", "")),
+                alert_from=str(message.get("From", "")),
             )
         )
     return jobs
@@ -333,7 +400,8 @@ def configure_email(config: dict) -> dict:
         "username": username,
         "enabled": bool(config.get("enabled", False)),
         "mailbox": str(config.get("mailbox", "INBOX"))[:128],
-        "limit": max(1, min(int(config.get("limit", 30)), 100)),
+        "limit": max(1, min(int(config.get("limit", 100)), 500)),
+        "lookback_days": max(1, min(int(config.get("lookback_days", 14)), 90)),
     }
     password = config.get("password")
     if password:
@@ -346,34 +414,120 @@ def configure_email(config: dict) -> dict:
     return safe
 
 
-def _imap_jobs(config: dict) -> list[dict]:
-    _validate_host(config["host"])
-    password = keyring.get_password(_CREDENTIAL_SERVICE, _credential_account(config))
+class EmailConnectionError(ValueError):
+    """An inbox failure with a message suitable for the dashboard."""
+
+
+def _read_email(config: dict, *, fetch_messages: bool) -> dict:
+    host = config.get("host", "imap.gmail.com")
+    try:
+        _validate_host(host)
+        password = keyring.get_password(_CREDENTIAL_SERVICE, _credential_account(config))
+    except Exception as exc:
+        raise EmailConnectionError(
+            "JobPilot could not open your saved inbox connection. Reconnect Gmail in Email settings."
+        ) from exc
     if not password:
-        raise ValueError("IMAP password is missing from Windows credential storage")
-    jobs = []
-    with imaplib.IMAP4_SSL(config["host"], 993, timeout=20) as inbox:
-        inbox.login(config["username"], password)
-        status, _ = inbox.select(config.get("mailbox", "INBOX"), readonly=True)
-        if status != "OK":
-            raise ValueError("IMAP mailbox could not be opened")
-        since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%d-%b-%Y")
-        status, result = inbox.uid("search", None, "SINCE", since)
-        if status != "OK":
-            raise ValueError("IMAP alert search failed")
-        identifiers = (result[0] or b"").split()[-max(1, min(int(config.get("limit", 30)), 100)) :]
-        for identifier in identifiers:
-            status, parts = inbox.uid("fetch", identifier, "(BODY.PEEK[])")
+        raise EmailConnectionError(
+            "Add your Gmail address and a Google app password in Email settings, then test the connection."
+        )
+    jobs, checked, skipped, available = {}, 0, 0, 0
+    try:
+        with imaplib.IMAP4_SSL(host, 993, timeout=20) as inbox:
+            try:
+                inbox.login(config["username"], password)
+            except imaplib.IMAP4.error as exc:
+                raise EmailConnectionError(
+                    "Gmail did not accept this connection. Save a Google app password, rather than your normal account password, and try again."
+                ) from exc
+            status, _ = inbox.select(config.get("mailbox", "INBOX"), readonly=True)
             if status != "OK":
-                continue
-            for part in parts:
-                if (
-                    isinstance(part, tuple)
-                    and isinstance(part[1], bytes)
-                    and len(part[1]) <= _MAX_BODY
-                ):
-                    jobs.extend(import_eml(part[1]))
-    return jobs
+                raise EmailConnectionError(
+                    "JobPilot connected to your email account but could not open the selected folder. Choose INBOX in Email settings."
+                )
+            days = max(1, min(int(config.get("lookback_days", 14)), 90))
+            since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%d-%b-%Y")
+            status, result = inbox.uid("search", None, "SINCE", since)
+            if status != "OK":
+                raise EmailConnectionError(
+                    "JobPilot connected to Gmail but could not list recent messages. Try Sync now again."
+                )
+            identifiers = (result[0] or b"").split()
+            available = len(identifiers)
+            limit = max(1, min(int(config.get("limit", 100)), 500))
+            for identifier in identifiers[-limit:] if fetch_messages else []:
+                status, parts = inbox.uid("fetch", identifier, "(BODY.PEEK[])")
+                checked += 1
+                if status != "OK":
+                    skipped += 1
+                    continue
+                bodies = [
+                    part[1]
+                    for part in parts
+                    if isinstance(part, tuple) and isinstance(part[1], bytes)
+                ]
+                if not bodies or any(len(body) > _MAX_BODY for body in bodies):
+                    skipped += 1
+                    continue
+                for body in bodies:
+                    try:
+                        for job in import_eml(body):
+                            jobs.setdefault(job["url"], job)
+                    except (ValueError, TypeError, UnicodeError):
+                        skipped += 1
+    except EmailConnectionError:
+        raise
+    except Exception as exc:
+        raise EmailConnectionError(
+            "JobPilot could not reach your inbox. Check your internet connection, then try Sync now again."
+        ) from exc
+    return {
+        "ok": True,
+        "state": "connected",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "messages_available": available,
+        "messages_checked": checked,
+        "messages_skipped": skipped,
+        "links_found": len(jobs),
+        "truncated": fetch_messages and checked < available,
+        "jobs": list(jobs.values()),
+    }
+
+
+def check_email_connection(config: dict) -> dict:
+    return _email_scan(config, fetch_messages=False)
+
+
+def sync_email(config: dict) -> dict:
+    return _email_scan(config, fetch_messages=True)
+
+
+def _email_scan(config: dict, *, fetch_messages: bool) -> dict:
+    try:
+        result = _read_email(config, fetch_messages=fetch_messages)
+    except EmailConnectionError as exc:
+        with _email_lock:
+            _email_result.update(state="error", message=str(exc))
+        raise
+    summary = {key: value for key, value in result.items() if key != "jobs"}
+    summary["message"] = (
+        f"Checked {result['messages_checked']} recent messages and found {result['links_found']} job links."
+        if fetch_messages
+        else "Inbox connection verified. Use Sync now to import job alerts."
+    )
+    with _email_lock:
+        _email_result.clear()
+        _email_result.update(summary)
+    return result
+
+
+def get_last_email_result() -> dict:
+    with _email_lock:
+        return dict(_email_result)
+
+
+def _imap_jobs(config: dict) -> list[dict]:
+    return sync_email(config)["jobs"]
 
 
 def _jobspy_search(**kwargs):

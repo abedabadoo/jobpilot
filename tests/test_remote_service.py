@@ -5,6 +5,7 @@ def test_remote_setup_requires_local_token_and_keeps_secret_out_of_state(tmp_pat
     client = api(tmp_path, monkeypatch)
     import jobpilot.service as service
 
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     assert client.post("/api/remote/setup", json={}).status_code == 403
     headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}
     monkeypatch.setattr(
@@ -24,6 +25,7 @@ def test_remote_control_is_explicit_and_does_not_stop_active_case(tmp_path, monk
     client = api(tmp_path, monkeypatch)
     import jobpilot.service as service
 
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}
     calls = []
     monkeypatch.setattr(service.remote_runtime, "start_async", lambda: calls.append("start"))

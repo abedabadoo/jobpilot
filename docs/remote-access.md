@@ -1,4 +1,6 @@
-# Remote access
+# Remote access (legacy)
+
+Remote access is dormant in the current assistant workflow. Assistant mode disables the gateway and removes its controls from the dashboard. The notes below describe retained legacy code and are not part of normal setup.
 
 Remote access lets a paired device interact with an application browser retained on the PC. Use it to complete sign-in, CAPTCHA or verification steps yourself. It does not provide general access to the Windows desktop or the local dashboard API.
 

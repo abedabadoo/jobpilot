@@ -1,62 +1,63 @@
 <!doctype html>
+
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#0b101b" />
-    <title>JobPilot · Job dashboard</title>
+    <meta content="width=device-width,initial-scale=1" name="viewport" />
+    <meta content="#0b101b" name="theme-color" />
+    <title>JobPilot · Opportunities</title>
     <link
-      rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%2337d8b3'/%3E%3Cpath d='M12 11h16v12c0 6-4 9-8 9s-8-3-8-9' fill='none' stroke='%230b101b' stroke-width='4'/%3E%3C/svg%3E"
+      rel="icon"
     />
-    <link rel="stylesheet" href="/style.css" />
-    <script defer src="/app.js"></script>
+    <link href="/style.css" rel="stylesheet" />
+    <script defer="" src="/app.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
-    <aside class="sidebar" aria-label="Main navigation">
-      <a class="brand" href="#overview" aria-label="JobPilot home"
+    <aside aria-label="Main navigation" class="sidebar">
+      <a aria-label="JobPilot home" class="brand" href="#overview"
         ><span class="brand-mark"
-          ><svg viewBox="0 0 30 30" aria-hidden="true">
-            <path d="M7 8h16v9c0 6-3 9-8 9s-8-3-8-9" />
-            <path d="m12 15 3 3 8-10" /></svg></span
+          ><svg aria-hidden="true" viewbox="0 0 30 30">
+            <path d="M7 8h16v9c0 6-3 9-8 9s-8-3-8-9"></path>
+            <path d="m12 15 3 3 8-10"></path></svg></span
         ><span>JobPilot<span class="brand-caption">JOB SEARCH</span></span></a
       >
-      <div class="workspace-label">WORKSPACE</div>
       <nav id="navigation">
         <button class="nav-item active" data-view="overview">
-          <span data-icon="dashboard"></span>Overview<span class="nav-pip"></span>
-        </button>
-        <button class="nav-item" data-view="profile">
-          <span data-icon="user"></span>Profile & experience
-        </button>
-        <button class="nav-item" data-view="answers">
-          <span data-icon="file"></span>Application answers<span
-            id="answersNavCount"
+          <span data-icon="briefcase"></span>Opportunities</button
+        ><button class="nav-item" data-view="applied"><span data-icon="check"></span>Applied</button
+        ><button aria-label="Problems" class="nav-item" data-view="problems">
+          <span data-icon="alert"></span>Problems<span
+            aria-hidden="true"
             class="nav-badge"
-            hidden
+            hidden=""
+            id="problemsNavCount"
           ></span>
         </button>
-        <button class="nav-item" data-view="connections">
-          <span data-icon="link"></span>Connections
-        </button>
-        <a class="nav-item" href="/remote-setup.html"
-          ><span data-icon="link"></span>Remote access</a
-        >
-        <button class="nav-item" data-view="settings">
+        <div class="nav-divider"></div>
+        <button class="nav-item" data-view="profile">
+          <span data-icon="user"></span>Profile &amp; experience</button
+        ><button class="nav-item" data-view="connections">
+          <span data-icon="mail"></span>Email &amp; alerts</button
+        ><button class="nav-item" data-view="settings">
           <span data-icon="settings"></span>Preferences
         </button>
       </nav>
       <div class="sidebar-bottom">
+        <div class="applied-summary">
+          <span>Applications tracked</span><strong id="appliedTotal">0</strong
+          ><small>Marked applied in your workspace</small>
+        </div>
         <div class="local-status">
-          <span id="connectionDot" class="dot amber"></span>
+          <span class="dot amber" id="connectionDot"></span>
           <div>
             <strong id="connectionLabel">Connecting to local service</strong
             ><span>Worker runs on this PC</span>
           </div>
         </div>
         <div class="sidebar-profile">
-          <div id="profileAvatar" class="avatar">AP</div>
+          <div class="avatar" id="profileAvatar">AP</div>
           <div>
             <strong id="profileName">Applicant profile</strong
             ><span id="profileLocation">Location not set</span>
@@ -65,138 +66,79 @@
         </div>
       </div>
     </aside>
-
-    <main id="main" class="main" tabindex="-1">
+    <main class="main" id="main" tabindex="-1">
       <div class="topline">
         <div class="breadcrumb">
-          Workspace <span>/</span> <strong id="breadcrumbCurrent">Overview</strong>
+          Workspace <span>/</span> <strong id="breadcrumbCurrent">Opportunities</strong>
         </div>
         <div class="topline-right">
           <span class="local-pill"><span data-icon="lock"></span>Local service</span
           ><span id="todayLabel"></span>
         </div>
       </div>
-      <section id="view-overview" class="view">
+      <section class="view" id="view-overview">
         <header class="page-heading">
           <div>
-            <div class="eyebrow">JOB DASHBOARD</div>
-            <h1>Jobs and applications</h1>
-            <p>Search listings, prepare applications, and track submission receipts.</p>
+            <div class="eyebrow">DISCOVER &amp; PREPARE</div>
+            <h1>Opportunities</h1>
+            <p>Find a role, review the keywords, and prepare your documents.</p>
           </div>
           <div class="header-actions">
-            <button id="searchNow" class="button secondary">
+            <button class="button secondary" id="searchNow">
               <span data-icon="search"></span>Search now</button
-            ><button id="openImport" class="button primary">
+            ><button class="button primary" id="openImport">
               <span data-icon="plus"></span>Add opportunity
             </button>
           </div>
         </header>
-        <div id="serviceBanner" class="notice amber-notice" hidden></div>
-        <section class="metrics" aria-label="Application metrics">
-          <article class="metric">
-            <div class="metric-top">
-              <span>Confirmed applications</span
-              ><span class="metric-icon teal" data-icon="check"></span>
-            </div>
-            <div class="metric-value" id="metricConfirmed">—</div>
-            <div class="metric-foot">
-              <span class="dot teal"></span>Verified submission receipts
-            </div>
-          </article>
-          <article class="metric">
-            <div class="metric-top">
-              <span>Submission errors</span
-              ><span class="metric-icon amber" data-icon="alert"></span>
-            </div>
-            <div class="metric-value" id="metricErrors">—</div>
-            <div class="metric-foot">Recorded submission failures</div>
-          </article>
-          <article class="metric">
-            <div class="metric-top">
-              <span>Success rate</span><span class="metric-icon violet" data-icon="chart"></span>
-            </div>
-            <div class="metric-value" id="metricRate">—</div>
-            <div class="metric-foot">Confirmed / resolved submissions</div>
-          </article>
-          <article class="metric">
-            <div class="metric-top">
-              <span>Applied today</span><span class="metric-icon blue" data-icon="send"></span>
-            </div>
-            <div class="metric-value" id="metricToday">—</div>
-            <div class="metric-foot" id="metricTodayFoot">Confirmed today</div>
-          </article>
-        </section>
-        <section
-          id="diagnosticsPanel"
-          class="panel diagnostics-panel"
-          aria-labelledby="blockersTitle"
-        >
-          <div class="panel-heading">
-            <div>
-              <h2 id="blockersTitle">Submission readiness</h2>
-              <p>Loading recorded blockers and queue status.</p>
-            </div>
-          </div>
-        </section>
+        <div class="notice amber-notice" hidden="" id="serviceBanner"></div>
         <div class="dashboard-grid">
           <div class="dashboard-primary">
             <section class="panel queue-panel">
               <div class="panel-heading pipeline-heading">
                 <div>
-                  <h2>Opportunity pipeline</h2>
-                  <p>Sorted by posting date, then fit.</p>
+                  <h2>Your opportunities</h2>
+                  <p>Newer postings first, then the strongest fit.</p>
                 </div>
                 <div class="pipeline-actions">
-                  <button id="cleanupJobs" class="button secondary compact">
+                  <button class="button secondary compact" id="cleanupJobs">
                     <span data-icon="trash"></span><span>Remove jobs 7+ days old</span></button
                   ><a
+                    aria-label="Download application report"
                     class="icon-button"
                     href="/api/report"
-                    aria-label="Download application report"
                     title="Download CSV report"
                     ><span data-icon="download"></span
                   ></a>
                 </div>
               </div>
-              <div class="queue-tabs" role="tablist" aria-label="Job status">
-                <button role="tab" aria-selected="true" class="queue-tab active" data-filter="all">
-                  All opportunities <span id="countAll">0</span></button
-                ><button role="tab" aria-selected="false" class="queue-tab" data-filter="queued">
-                  Queued <span id="countQueued">0</span></button
-                ><button role="tab" aria-selected="false" class="queue-tab" data-filter="review">
-                  Needs review <span id="countReview">0</span></button
-                ><button role="tab" aria-selected="false" class="queue-tab" data-filter="confirmed">
-                  Confirmed <span id="countConfirmed">0</span>
-                </button>
-              </div>
               <div class="queue-toolbar">
                 <label class="search-field"
                   ><span data-icon="search"></span
                   ><input
+                    aria-label="Search role or company"
                     id="jobQuery"
-                    type="search"
                     placeholder="Search role or company"
-                    aria-label="Search role or company" /></label
-                ><select id="sourceFilter" aria-label="Filter by source">
-                  <option value="all">All sources</option></select
-                ><select id="statusFilter" aria-label="Filter by status">
-                  <option value="all">All statuses</option>
+                    type="search" /></label
+                ><select aria-label="Filter by source" id="sourceFilter">
+                  <option value="all">All sources</option>
                 </select>
               </div>
               <div class="table-wrap">
                 <table class="jobs-table">
                   <thead>
                     <tr>
-                      <th scope="col">OPPORTUNITY</th>
-                      <th scope="col">FRESHNESS</th>
-                      <th scope="col">FIT</th>
-                      <th scope="col">STATUS</th>
-                      <th scope="col"><span class="sr-only">Details</span></th>
+                      <th>Opportunity</th>
+                      <th>Posted</th>
+                      <th>Fit</th>
+                      <th>Review</th>
+                      <th>Applied?</th>
+                      <th><span class="sr-only">Remove</span></th>
                     </tr>
                   </thead>
                   <tbody id="jobsBody"></tbody>
                 </table>
-                <div id="queueEmpty" class="empty-state">
+                <div class="empty-state" id="queueEmpty">
                   <div class="empty-art">
                     <span data-icon="briefcase"></span><span class="empty-art-spark"></span>
                   </div>
@@ -205,41 +147,28 @@
                     Add a job link, import an email alert, or run a search.<br />New listings appear
                     here.
                   </p>
-                  <button class="button secondary" data-open-import>
+                  <button class="button secondary" data-open-import="">
                     <span data-icon="plus"></span>Add your first opportunity
                   </button>
                 </div>
               </div>
               <div class="queue-footer">
-                <span><span class="dot teal"></span>Freshness → fit → newest</span
+                <span>Review documents, then apply in your browser.</span
                 ><span id="visibleCount">0 opportunities</span>
               </div>
             </section>
-            <section class="panel activity-panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>Recent activity</h2>
-                  <p>Search and application events.</p>
-                </div>
-                <span class="live-tag"><span class="dot teal"></span>Live</span>
-              </div>
-              <div id="activityList" class="activity-list">
-                <div class="activity-empty">No worker activity recorded.</div>
-              </div>
-            </section>
           </div>
-          <aside class="dashboard-aside" aria-label="Worker and search information">
+          <aside aria-label="Worker and search information" class="dashboard-aside">
             <section class="panel worker-panel">
               <div class="panel-heading">
-                <h2>Worker health</h2>
+                <h2>Discovery</h2>
                 <span class="worker-symbol" data-icon="pulse"></span>
               </div>
               <div class="worker-state">
-                <span id="workerDot" class="dot amber"></span
-                ><strong id="workerState">Connecting</strong
-                ><span id="workerBadge" class="small-badge">LOCAL</span>
+                <span class="dot amber" id="workerDot"></span
+                ><strong id="workerState">Connecting</strong>
               </div>
-              <p id="workerCurrent" class="worker-current">Waiting for the local service.</p>
+              <p class="worker-current" id="workerCurrent">Waiting for the local service.</p>
               <dl class="worker-details">
                 <div>
                   <dt>Last heartbeat</dt>
@@ -249,40 +178,13 @@
                   <dt>Last search</dt>
                   <dd id="lastSearch">—</dd>
                 </div>
-                <div>
-                  <dt>Queued</dt>
-                  <dd id="workerQueued">—</dd>
-                </div>
-                <div>
-                  <dt>Next opportunity</dt>
-                  <dd id="nextJob">—</dd>
-                </div>
               </dl>
               <div class="worker-controls">
-                <button id="toggleSearch" class="button secondary compact">
-                  <span data-icon="pause"></span><span>Pause search</span></button
-                ><button id="toggleSubmissions" class="button secondary compact">
-                  <span data-icon="pause"></span><span>Pause submissions</span>
+                <button class="button secondary compact" id="toggleSearch">
+                  <span data-icon="pause"></span><span>Pause search</span>
                 </button>
               </div>
-              <button id="toggleWorker" class="button worker-stop">
-                <span data-icon="stop"></span><span>Stop worker</span>
-              </button>
-              <div id="workerError" class="inline-error" hidden></div>
-            </section>
-            <section class="panel priority-panel">
-              <div class="panel-heading">
-                <div>
-                  <h2>Freshness priority</h2>
-                  <p>Jobs grouped by posting date.</p>
-                </div>
-                <span class="soft-icon" data-icon="clock"></span>
-              </div>
-              <div id="freshnessBuckets" class="freshness-list"></div>
-              <div class="priority-note">
-                <span data-icon="info"></span
-                ><span>Higher fit leads within each window. Unknown posting dates rank last.</span>
-              </div>
+              <div class="worker-extended" id="workerExtra"></div>
             </section>
             <section class="profile-nudge">
               <div class="nudge-icon" data-icon="shield"></div>
@@ -295,188 +197,175 @@
           </aside>
         </div>
         <footer class="page-footer">
-          <span>JobPilot <span class="footer-dot">·</span> Local job search and applications</span
+          <span>Discover · Prepare · Apply · Track</span
           ><span id="lastUpdated">Waiting for live data</span>
         </footer>
       </section>
-
-      <section id="view-profile" class="view" hidden>
+      <section class="view" hidden="" id="view-applied">
+        <header class="page-heading">
+          <div>
+            <div class="eyebrow">YOUR APPLICATION RECORD</div>
+            <h1>Applied</h1>
+            <p>Roles you have marked as applied. Your documents and fit scores stay with them.</p>
+          </div>
+          <a class="button secondary" href="/api/report"
+            ><span data-icon="download"></span>Download report</a
+          >
+        </header>
+        <section class="panel">
+          <div class="queue-toolbar">
+            <label class="search-field"
+              ><span data-icon="search"></span
+              ><input
+                aria-label="Search applied roles"
+                id="appliedQuery"
+                placeholder="Search applied roles"
+                type="search" /></label
+            ><span class="result-count" id="appliedCount"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="jobs-table">
+              <thead>
+                <tr>
+                  <th>Opportunity</th>
+                  <th>Applied</th>
+                  <th>Fit</th>
+                  <th>Review</th>
+                  <th>Tracking</th>
+                  <th><span class="sr-only">Remove</span></th>
+                </tr>
+              </thead>
+              <tbody id="appliedBody"></tbody>
+            </table>
+            <div class="empty-state" id="appliedEmpty">
+              <span data-icon="check"></span>
+              <h3>No applications tracked yet</h3>
+              <p>Choose Applied? beside a role once you have sent your application.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+      <section class="view" hidden="" id="view-problems">
+        <header class="page-heading">
+          <div>
+            <div class="eyebrow">ANYTHING THAT NEEDS A FIX</div>
+            <h1>Problems</h1>
+            <p>Clear messages about searches, email alerts and documents.</p>
+          </div>
+          <span class="result-count" id="problemCount"></span>
+        </header>
+        <div class="problems-list" id="problemsList"></div>
+      </section>
+      <section class="view" hidden="" id="view-profile">
         <header class="page-heading">
           <div>
             <div class="eyebrow">APPLICANT DETAILS</div>
-            <h1>Profile & experience</h1>
+            <h1>Profile &amp; experience</h1>
             <p>Manage the contact details, experience, and qualifications used in applications.</p>
           </div>
-          <button id="editProfile" class="button primary">
+          <button class="button primary" id="editProfile">
             <span data-icon="edit"></span>Edit profile
           </button>
         </header>
-        <div id="profileSummary" class="profile-summary panel"></div>
-        <div id="experienceList" class="experience-list"></div>
+        <div class="profile-summary panel" id="profileSummary"></div>
+        <div class="experience-list" id="experienceList"></div>
       </section>
-
-      <section id="view-answers" class="view" hidden>
-        <header class="page-heading">
-          <div>
-            <div class="eyebrow">SCREENING QUESTIONS</div>
-            <h1>Application answers</h1>
-            <p>Set up common facts once, then review any employer-specific questions.</p>
-          </div>
-          <button id="editAnswers" class="button primary">
-            <span data-icon="edit"></span>Set up common answers
-          </button>
-        </header>
-        <div class="notice">
-          <span data-icon="shield"></span>
-          <div>
-            <strong>Unknown answers need your attention.</strong>
-            <p>
-              Required questions without a saved answer enter review. Work authorization,
-              sponsorship, salary, relocation, clearance, disability, race and veteran responses are
-              never inferred.
-            </p>
-          </div>
-        </div>
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h2>Saved answers</h2>
-              <p>
-                Only values you explicitly provide are used. Exact employer questions remain
-                available in the advanced editor.
-              </p>
-            </div>
-          </div>
-          <div id="answersList" class="answers-list"></div>
-        </section>
-      </section>
-
-      <section id="view-connections" class="view" hidden>
+      <section class="view" hidden="" id="view-connections">
         <header class="page-heading">
           <div>
             <div class="eyebrow">JOB BOARDS AND EMAIL</div>
-            <h1>Connections</h1>
-            <p>
-              Use your regular browser for applications, or connect a separate automated worker
-              session.
-            </p>
+            <h1>Email &amp; alerts</h1>
+            <p>Bring job links from email into your opportunities.</p>
           </div>
-          <button class="button secondary" data-open-import>
+          <button class="button secondary" data-open-import="">
             <span data-icon="plus"></span>Import an alert
           </button>
         </header>
-        <div class="connection-grid">
-          <article class="panel connection-card">
-            <div class="connection-logo linkedin">in</div>
-            <span class="small-badge">YOUR BROWSER</span>
-            <h2>LinkedIn</h2>
-            <p>
-              Open LinkedIn job search in your regular browser. To apply to a specific opportunity,
-              use Open application tab in that job’s details.
-            </p>
-            <button class="button primary" data-browser-tab="linkedin">
-              <span data-icon="external"></span>Open LinkedIn job search
-            </button>
-            <p>
-              The automated worker uses a separate browser. Connect it only when the worker needs
-              sign-in.
-            </p>
-            <div id="linkedinStatus" class="connection-status">Worker session: not verified</div>
-            <button class="button secondary" data-login="linkedin">
-              <span data-icon="link"></span>Connect worker session
-            </button>
-          </article>
-          <article class="panel connection-card">
-            <div class="connection-logo indeed">i</div>
-            <span class="small-badge">YOUR BROWSER</span>
-            <h2>Indeed</h2>
-            <p>Open Indeed in your regular browser with its saved sign-ins.</p>
-            <button class="button primary" data-browser-tab="indeed">
-              <span data-icon="external"></span>Open Indeed tab
-            </button>
-            <p>
-              The automated worker uses a separate browser. Connect it only when the worker needs
-              sign-in.
-            </p>
-            <div id="indeedStatus" class="connection-status">Worker session: not verified</div>
-            <button class="button secondary" data-login="indeed">
-              <span data-icon="link"></span>Connect worker session
-            </button>
-          </article>
-          <article class="panel connection-card">
-            <div class="connection-logo employer"><span data-icon="building"></span></div>
-            <span class="small-badge">YOUR BROWSER</span>
-            <h2>Employer site</h2>
-            <p>
-              Open an employer application or portal in your regular browser with its saved
-              sign-ins.
-            </p>
-            <button id="employerLogin" class="button primary">
-              <span data-icon="external"></span>Open employer tab
-            </button>
-            <p>
-              The automated worker uses a separate browser. Connecting it does not share your
-              regular browser’s sign-ins.
-            </p>
-            <div id="employerStatus" class="connection-status">Worker session: not verified</div>
-            <button id="employerWorkerLogin" class="button secondary">
-              <span data-icon="link"></span>Connect worker session
-            </button>
-          </article>
-        </div>
         <section class="panel email-panel">
           <div class="panel-heading">
             <div>
-              <h2>Email job alerts</h2>
-              <p>Optional IMAP inbox connection. You can also import an EML alert manually.</p>
+              <h2>Gmail job alerts</h2>
+              <p>Use a Gmail app password. Your password is saved in Windows credential storage.</p>
             </div>
             <span class="soft-icon" data-icon="mail"></span>
           </div>
-          <form id="emailForm" class="form-grid">
+          <form class="form-grid" id="emailForm">
             <label
-              >IMAP host<input
-                name="host"
-                placeholder="imap.example.com"
-                required
-                autocomplete="off" /></label
-            ><label
-              >Port<input
-                name="port"
-                type="number"
-                value="993"
-                min="1"
-                max="65535"
-                required /></label
-            ><label
-              >Email / username<input
-                name="user"
-                type="text"
+              >Gmail address<input
                 autocomplete="username"
-                required
-                placeholder="you@example.com" /></label
+                name="user"
+                placeholder="you@gmail.com"
+                required=""
+                type="email" /></label
             ><label
               >App password<input
-                name="password"
-                type="password"
                 autocomplete="new-password"
-                placeholder="Use your provider's app password" /></label
-            ><label>Folder<input name="folder" value="INBOX" required /></label
-            ><label class="check-label"
-              ><input name="enabled" type="checkbox" /><span>Enable email collection</span></label
+                name="password"
+                placeholder="Leave blank to keep the saved password"
+                type="password"
+            /></label>
+            <details class="full advanced-email">
+              <summary>Advanced inbox settings</summary>
+              <div class="form-grid">
+                <label>IMAP host<input name="host" required="" value="imap.gmail.com" /></label
+                ><label
+                  >Port<input
+                    max="65535"
+                    min="1"
+                    name="port"
+                    required=""
+                    type="number"
+                    value="993" /></label
+                ><label>Mailbox<input name="folder" required="" value="INBOX" /></label
+                ><label
+                  >Scan limit<input
+                    max="500"
+                    min="1"
+                    name="limit"
+                    required=""
+                    type="number"
+                    value="100" /></label
+                ><label
+                  >Recent days<input
+                    max="90"
+                    min="1"
+                    name="lookback_days"
+                    required=""
+                    type="number"
+                    value="14"
+                /></label>
+              </div>
+            </details>
+            <label class="check-label full"
+              ><input name="enabled" type="checkbox" checked /><span
+                >Check Gmail automatically with job searches</span
+              ></label
             >
             <div class="form-footer full">
-              <p id="emailStatus" class="form-note">
-                Email connection has not been verified in this dashboard.
-              </p>
               <button class="button primary" type="submit">
-                <span data-icon="save"></span>Save email settings
+                <span data-icon="link"></span>Connect &amp; test</button
+              ><button class="button secondary" id="syncEmail" type="button">
+                <span data-icon="refresh"></span>Sync now
               </button>
             </div>
+            <p class="form-note full" id="emailStatus" role="status">
+              Not connected. Add your Gmail address and an app password to get started.
+            </p>
+            <div class="email-stats full" hidden="" id="emailSyncStats"></div>
+            <p class="form-note full">
+              Create an app password after enabling Google 2-Step Verification:
+              <a
+                href="https://myaccount.google.com/apppasswords"
+                id="gmailHelp"
+                rel="noopener noreferrer"
+                target="_blank"
+                >Open Google app passwords</a
+              >. Inbox checks are read-only and do not mark messages as read.
+            </p>
           </form>
         </section>
       </section>
-
-      <section id="view-settings" class="view" hidden>
+      <section class="view" hidden="" id="view-settings">
         <header class="page-heading">
           <div>
             <div class="eyebrow">SEARCH AND WORKER SETTINGS</div>
@@ -484,7 +373,7 @@
             <p>Choose your target roles, search cadence and local model.</p>
           </div>
         </header>
-        <form id="settingsForm" class="panel settings-panel">
+        <form class="panel settings-panel" id="settingsForm">
           <div class="panel-heading">
             <div>
               <h2>Search preferences</h2>
@@ -496,8 +385,9 @@
               >Target roles <span class="label-note">One role per line, or separated by commas</span
               ><textarea
                 name="target_roles"
+                placeholder="Security Engineer
+Cloud Security Engineer"
                 rows="4"
-                placeholder="Security Engineer&#10;Cloud Security Engineer"
               ></textarea></label
             ><label>Search location<input name="location" placeholder="Cincinnati, OH" /></label
             ><label class="check-label"
@@ -507,14 +397,14 @@
             ><label
               >Search interval <span class="label-note">Minutes</span
               ><input
-                name="search_interval_minutes"
-                type="number"
-                min="5"
                 max="1440"
-                required /></label
+                min="5"
+                name="search_interval_minutes"
+                required=""
+                type="number" /></label
             ><label
               >Minimum fit <span class="label-note">0–100</span
-              ><input name="min_fit" type="number" min="0" max="100" required
+              ><input max="100" min="0" name="min_fit" required="" type="number"
             /></label>
             <div class="form-section-title full">
               <h2>Local model</h2>
@@ -523,21 +413,19 @@
             <label
               >Ollama URL<input
                 name="ollama_url"
-                type="url"
-                required
-                placeholder="http://127.0.0.1:11434" /></label
-            ><label>Model<input name="model" required readonly placeholder="qwen3.5:9b" /></label>
+                placeholder="http://127.0.0.1:11436"
+                required=""
+                type="url" /></label
+            ><label
+              >Model<input name="model" placeholder="qwen3.5:9b" readonly="" required=""
+            /></label>
             <div class="form-section-title full">
-              <h2>Worker behavior</h2>
-              <p>Search and submissions can be paused independently.</p>
+              <h2>Discovery &amp; startup</h2>
+              <p>Choose when searches run on this PC.</p>
             </div>
             <label class="check-label"
               ><input name="search_enabled" type="checkbox" /><span
                 >Enable automatic search</span
-              ></label
-            ><label class="check-label"
-              ><input name="submission_enabled" type="checkbox" /><span
-                >Enable eligible application submissions</span
               ></label
             ><label class="check-label"
               ><input name="keep_awake" type="checkbox" /><span
@@ -560,20 +448,20 @@
         </form>
       </section>
     </main>
-    <dialog id="modal" class="modal" aria-labelledby="modalTitle">
+    <dialog aria-labelledby="modalTitle" class="modal" id="modal">
       <div class="modal-shell">
         <div class="modal-heading">
           <div>
-            <div id="modalEyebrow" class="eyebrow"></div>
+            <div class="eyebrow" id="modalEyebrow"></div>
             <h2 id="modalTitle"></h2>
           </div>
-          <button id="closeModal" class="icon-button" aria-label="Close dialog">
+          <button aria-label="Close dialog" class="icon-button" id="closeModal">
             <span data-icon="close"></span>
           </button>
         </div>
         <div id="modalContent"></div>
       </div>
     </dialog>
-    <div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
+    <div aria-live="polite" class="toast" hidden="" id="toast" role="status"></div>
   </body>
 </html>

@@ -1,33 +1,39 @@
 # Troubleshooting
 
-## The dashboard is running but applications are not moving
+## A resume or cover letter needs updating
 
-Check submission readiness and the recorded reason on each held job. Worker activity, document preparation and a confirmed application are different states. Search and submissions have separate controls. Missing job details, unsupported forms, authentication and unknown required questions each need a different correction.
+Review the saved profile and the role's job description. Open **Review** to inspect extracted keywords, then regenerate the documents. Generation runs in the background; other roles and external links stay usable. Existing document versions remain on disk.
 
-Replace the fictional initial profile and save your actual career facts. Supply only screening answers you can confirm; exact employer questions can be entered in the advanced answers editor. Changing saved answers can release applicable unanswered-field holds, but cannot clear an uncertain submission. Sign-in must be verified before related authentication holds can resume.
+The resume contains saved experience plus a tailored skills section. New job terms can appear in the skills and cover-letter draft even when they are absent from the saved profile. Review the exports and edit them before applying.
 
-## A submission is uncertain
+## Opening a job link
 
-Open the job's evidence and inspect the employer portal or receipt email. Use the recorded-outcome control only after verifying either the receipt or that no application was submitted. Manually verified outcomes are listed separately from automated receipt confirmations. Do not repeatedly retry or delete an uncertain record to clear its hold.
+Use the posting link in the role's Review view. JobPilot opens it in your default browser using that browser's saved sessions. This does not need the document worker or a separate automated browser. If the browser does not open, copy the visible posting link and check the Windows default browser association.
+
+## Gmail is not connected
+
+Save your Gmail address and a Google app password in Email, then use **Connect & test**. A successful save does not verify inbox access. **Sync now** reports the actual check time, messages read, links found, and jobs imported. An unsuccessful test shows an action to take; no normal account password is required.
+
+If a scan checks fewer messages than the inbox contains in the chosen date window, increase the limit under Advanced or shorten the window. Messages remain unread, and JobPilot does not send or delete email. EML import remains available.
+
+## Search or document preparation fails
+
+Open **Problems** for a plain-language explanation and a link to the affected role. Import the public employer posting when a board omits the description or blocks a fetch. Resolve a problem after addressing it. Technical diagnostics remain in local logs for development.
+
+Local-model failures use deterministic fact ranking rather than preventing document preparation. Check Ollama and the configured model if you want local ranking restored.
+
+## Tracking applications
+
+Use **Applied?** when you submit an application yourself. The role moves to Applied and retains its documents and fit score. Undo the applied mark to return it to Opportunities. No employer receipt is required for manual tracking.
+
+Automatic submission and remote access are dormant. Older enabled preferences do not reactivate them in assistant mode.
 
 ## Desktop or local service will not start
 
-Run `JobPilot.exe --diagnose --report diagnosis.json` from the installation directory, or `.\.venv\Scripts\python.exe launcher.py --diagnose --report diagnosis.json` from a checkout. The report contains local paths; review it before sharing. Check `logs/desktop.log`, `logs/service.err.log` and `logs/ollama.err.log` under the data directory. A source run needs its own installed Python dependencies, Chromium and WebView2.
+Run `JobPilot.exe --diagnose --report diagnosis.json`, or run the source launcher with the same options. The diagnostic report contains local paths, so review it before sharing. Check `logs/desktop.log`, `logs/service.err.log`, and `logs/ollama.err.log` under the data directory.
 
-Only run one copy at a time. The launcher reuses local services at `127.0.0.1:8765` and `127.0.0.1:11436`. A port conflict can otherwise connect a source dashboard to a different running copy. Reinstall code using the original data path rather than deleting the database.
+Only run one copy at a time. The launcher reuses services on ports `8765` and `11436`. Back up the data directory and repair code using the original data path rather than deleting application history.
 
-## Local model unavailable
+## Removing jobs
 
-Check that Ollama is installed and `qwen3.5:9b` exists in JobPilot's model store, not only another Ollama instance. Use the host and model-directory variables in [setup](setup.md). The launcher uses port `11436`. Preparation falls back to deterministic selection of saved facts when local inference is unavailable or invalid; it does not create missing qualifications.
-
-## Search, sign-in or remote access fails
-
-Search sites can rate-limit or block collection. Check activity, retry later or import the public employer posting. A successful login to one site does not establish a session on every employer portal.
-
-For remote access, keep the PC awake and connected, check the local remote-access status and use its current pairing link. Quick Tunnel hostnames are temporary. Notification permission and delivery are separate from pairing; use the portal's notification test. See [remote access](remote-access.md).
-
-## Remove old jobs
-
-Use **Remove old jobs** in the pipeline and inspect the preview before confirming permanent deletion. It lists jobs posted at least seven days ago. Unknown or future posting dates, active applications and open verification sessions are kept. The preview expires after five minutes and eligibility is checked again when deleting.
-
-Deletion removes the listed job and application records, including any outcomes in that list. Saved files stay on disk, and matching listings found again are ignored. Export or back up history you need before confirming. This action is not a receipt-resolution or disk-cleanup tool.
+Use **Remove** on an individual opportunity. The listing is excluded from later searches and imports. The existing **Remove jobs 7+ days old** control previews eligible old listings before deletion. Unknown or future posting dates and active document work are kept. Saved document files stay on disk; this is not a disk cleanup tool.

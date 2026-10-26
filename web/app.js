@@ -107,64 +107,25 @@
     'Date unknown',
   ];
   const viewLabels = {
-    overview: 'Overview',
+    overview: 'Opportunities',
+    applied: 'Applied',
+    problems: 'Problems',
     profile: 'Profile & experience',
-    answers: 'Application answers',
-    connections: 'Connections',
+    connections: 'Email & alerts',
     settings: 'Preferences',
   };
-  const commonAnswerSchema = [
-    {
-      key: '@work_authorized_us',
-      label: 'Are you legally authorized to work in the United States?',
-      type: 'choice',
-      help: 'For roles based in the United States. Your authorization is never inferred.',
-    },
-    {
-      key: '@requires_sponsorship_us',
-      label:
-        'Will you now or in the future require employer sponsorship to work in the United States?',
-      type: 'choice',
-      help: 'This combines current and future sponsorship requirements.',
-    },
-    {
-      key: '@available_cities',
-      label: 'Which cities are you available to work in?',
-      type: 'text',
-      help: 'List the cities you personally confirm, separated by semicolons; for example, Chicago, Illinois; Madison, Wisconsin.',
-    },
-    {
-      key: '@fluent_languages',
-      label: 'Which languages do you speak fluently?',
-      type: 'text',
-      help: 'List only languages you speak fluently, separated by commas.',
-    },
-    {
-      key: '@recruitment_privacy_consent',
-      label:
-        'Do you consent to processing your application under the employer’s recruitment privacy policy?',
-      type: 'choice',
-      help: 'Read the employer’s policy before answering. Leave this unknown if you have not reviewed it.',
-    },
-    {
-      key: '@application_accuracy_attestation',
-      label: 'Do you certify that the information in your application is true and correct?',
-      type: 'choice',
-      help: 'Confirm only after reviewing your career facts and application. Different employer statements may still require review.',
-    },
-  ];
   let state = null,
     token = '',
     activeView = 'overview',
-    activeFilter = 'all',
     selectedJob = null;
   let settingsDirty = false,
     emailDirty = false,
     polling = false,
     connected = false,
     toastTimer,
-    diagnosticsSignature = '';
-  const loginResults = {};
+    detailSignature = '';
+  let problemItems = [],
+    problemsAvailable = true;
 
   async function session() {
     const response = await fetch('/api/session', { cache: 'no-store' });
@@ -194,7 +155,10 @@
     if (!response.ok)
       throw new Error(
         text(
-          result.detail || result.message,
+          friendlyMessage(
+            result.detail || result.message,
+            `This action could not finish (HTTP ${response.status}). Please try again.`,
+          ),
           `The local service returned HTTP ${response.status}.`,
         ),
       );
@@ -202,7 +166,10 @@
   }
   function toast(message, error = false) {
     clearTimeout(toastTimer);
-    $('toast').textContent = message;
+    $('toast').textContent = friendlyMessage(
+      message,
+      'This action could not finish. Please try again.',
+    );
     $('toast').classList.toggle('error', error);
     $('toast').hidden = false;
     toastTimer = setTimeout(
@@ -298,36 +265,32 @@
   function number(value) {
     return value === null || value === undefined ? '—' : new Intl.NumberFormat().format(value);
   }
+  function isApplied(job) {
+    return (
+      job.applied === true ||
+      job.manual_applied === true ||
+      ['applied', 'manual_applied', 'confirmed', 'manually_verified'].includes(
+        String(job.status || '').toLowerCase(),
+      )
+    );
+  }
+  function friendlyMessage(
+    value,
+    fallback = 'Something needs attention. Review this opportunity and try again.',
+  ) {
+    const message = text(value, fallback);
+    return /traceback|[A-Za-z]:[\\/]|\/(?:Users|home|tmp|var|workspace)\/|\b[A-Za-z]+(?:Error|Exception):/i.test(
+      message,
+    )
+      ? fallback
+      : message;
+  }
   function renderMetrics() {
-    const metrics = state.metrics || {};
-    $('metricConfirmed').textContent = number(metrics.confirmed);
-    $('metricErrors').textContent = number(metrics.errors);
-    const rate = metrics.success_rate;
-    $('metricRate').textContent =
-      rate === null || rate === undefined ? 'N/A' : `${Math.round(Number(rate))}%`;
-    $('metricToday').textContent = number(metrics.applied_today);
-    $('metricTodayFoot').textContent =
-      `${prettyDate(new Date().toISOString())} · confirmed receipts`;
-    $('countAll').textContent = state.jobs.length;
-    $('countQueued').textContent = number(
-      metrics.queued ?? state.jobs.filter((job) => statusGroup(job) === 'queued').length,
-    );
-    $('countReview').textContent = number(
-      metrics.review ?? state.jobs.filter((job) => statusGroup(job) === 'review').length,
-    );
-    $('countConfirmed').textContent = number(
-      metrics.confirmed ?? state.jobs.filter((job) => statusGroup(job) === 'confirmed').length,
-    );
-    const reviewCount = state.jobs.filter(
-      (job) => statusGroup(job) === 'review' && classifyBlocker(job) === 'unanswered',
-    ).length;
-    $('answersNavCount').textContent = reviewCount;
-    $('answersNavCount').title = `${reviewCount} opportunities have unanswered required fields`;
-    $('answersNavCount').hidden = !reviewCount;
+    $('appliedTotal').textContent = number(state.jobs.filter(isApplied).length);
   }
   function updateOptions(select, values, label) {
-    const current = select.value;
-    const allValues = ['all', ...values];
+    const current = select.value,
+      allValues = ['all', ...values];
     if (
       Array.from(select.options)
         .map((item) => item.value)
@@ -335,523 +298,268 @@
     )
       return;
     select.replaceChildren();
-    const all = el('option', '', label);
-    all.value = 'all';
-    select.append(all);
-    values.forEach((value) => {
-      const option = el('option', '', value);
+    [['all', label], ...values.map((value) => [value, value])].forEach(([value, label]) => {
+      const option = el('option', '', label);
       option.value = value;
       select.append(option);
     });
     select.value = allValues.includes(current) ? current : 'all';
   }
+  function externalJobLink(job, label, value = job.url) {
+    const url = safeURL(value);
+    if (!url) return el('span', '', label);
+    const link = el('a', '', label);
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.addEventListener('click', async (event) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+        return;
+      event.preventDefault();
+      try {
+        const result = await api('/api/browser/open_external', { job_id: job.id, url });
+        if (!result.opened && result.status !== 'opened')
+          throw new Error(
+            'Your browser could not open the job link. Copy the link and open it in your browser.',
+          );
+      } catch (error) {
+        toast(
+          friendlyMessage(
+            error.message,
+            'Your browser could not open the job link. Copy the link and open it in your browser.',
+          ),
+          true,
+        );
+      }
+    });
+    return link;
+  }
+  function documentEntries(job) {
+    const names = {
+      resume_pdf: 'Resume PDF',
+      resume_docx: 'Resume Word',
+      cover_pdf: 'Cover letter PDF',
+      cover_docx: 'Cover letter Word',
+    };
+    return artifactEntries(job.documents || job.application?.documents)
+      .filter(
+        ([, path]) =>
+          typeof path === 'string' &&
+          /^(?:[A-Za-z]:[\\/]|\/)/.test(path) &&
+          /\.(?:pdf|docx)$/i.test(path),
+      )
+      .map(([key, path]) => [names[key] || path.split(/[\\/]/).pop(), path]);
+  }
+  async function setApplied(job, applied, node) {
+    const result = await action(
+      node,
+      `/api/jobs/${encodeURIComponent(job.id)}/applied`,
+      { applied },
+      applied ? 'Application added to Applied.' : 'Moved back to opportunities.',
+    );
+    if (result && selectedJob === job.id && $('modal').open) showJob(job.id);
+  }
+  async function removeJob(job, node) {
+    const result = await action(
+      node,
+      `/api/jobs/${encodeURIComponent(job.id)}/remove`,
+      {},
+      'Opportunity removed.',
+    );
+    if (result && selectedJob === job.id) closeModal();
+  }
+  function jobRow(job, applied) {
+    const row = el('tr');
+    row.dataset.jobId = String(job.id);
+    const first = el('td'),
+      cell = el('div', 'job-cell'),
+      company = String(job.company || 'Unknown company');
+    cell.append(el('div', 'company-avatar', company.slice(0, 1).toUpperCase()));
+    const details = el('div');
+    const title = externalJobLink(job, text(job.title, 'Untitled opportunity'));
+    title.className = 'job-title';
+    details.append(
+      title,
+      el('div', 'job-sub', `${company} · ${text(job.source, 'Unknown source')}`),
+    );
+    cell.append(details);
+    first.append(cell);
+    const fresh = el(
+      'td',
+      'freshness',
+      applied
+        ? prettyDate(job.applied_at || job.confirmed_at || job.created_at)
+        : job.bucket_label || labels[bucket(job)],
+    );
+    const fit = el('td'),
+      score = fitNumber(job),
+      fitContent = el('div', 'fit-cell');
+    const bar = el('span', 'fit-bar'),
+      fill = el('i');
+    fill.style.width = `${score || 0}%`;
+    bar.append(fill);
+    fitContent.append(bar, el('strong', '', score === null ? '—' : `${Math.round(score)}%`));
+    fit.append(fitContent);
+    const reviewCell = el('td'),
+      review = button('Review', 'secondary compact', 'file', () => showJob(job.id));
+    reviewCell.append(review);
+    const appliedCell = el('td'),
+      track = button(
+        applied ? 'Move back' : 'Applied?',
+        applied ? 'quiet compact' : 'track-button compact',
+        applied ? 'arrow' : 'check',
+      );
+    track.addEventListener('click', () => setApplied(job, !applied, track));
+    appliedCell.append(track);
+    const removeCell = el('td'),
+      remove = button('Remove', 'quiet danger-text compact', 'trash');
+    remove.addEventListener('click', () => removeJob(job, remove));
+    const busy = ['preparing', 'applying', 'submitting'].includes(job.status);
+    track.disabled = busy;
+    remove.disabled = busy;
+    removeCell.append(remove);
+    row.append(first, fresh, fit, reviewCell, appliedCell, removeCell);
+    return row;
+  }
   function renderJobs() {
     if (!state) return;
+    const pool = state.jobs.filter((job) => !isApplied(job));
     updateOptions(
       $('sourceFilter'),
-      [...new Set(state.jobs.map((job) => String(job.source || 'Unknown source')))].sort(),
+      [...new Set(pool.map((job) => String(job.source || 'Unknown source')))].sort(),
       'All sources',
     );
-    updateOptions(
-      $('statusFilter'),
-      [...new Set(state.jobs.map((job) => statusLabel(job)))].sort(),
-      'All statuses',
-    );
-    const query = $('jobQuery').value.toLowerCase().trim();
-    const source = $('sourceFilter').value,
-      status = $('statusFilter').value;
+    const query = $('jobQuery').value.toLowerCase().trim(),
+      source = $('sourceFilter').value;
     const jobs = sortedJobs(
-      state.jobs.filter(
+      pool.filter(
         (job) =>
-          (activeFilter === 'all' || statusGroup(job) === activeFilter) &&
           (source === 'all' || String(job.source || 'Unknown source') === source) &&
-          (status === 'all' || statusLabel(job) === status) &&
           `${job.title || ''} ${job.company || ''}`.toLowerCase().includes(query),
       ),
     );
-    const focusedJob = document.activeElement?.closest?.('tr[data-job-id]')?.dataset.jobId;
-    const fragment = document.createDocumentFragment();
-    jobs.forEach((job) => {
-      const tr = el('tr');
-      tr.dataset.jobId = String(job.id);
-      tr.tabIndex = 0;
-      tr.setAttribute(
-        'aria-label',
-        `View ${job.title || 'opportunity'} at ${job.company || 'company'}, ${statusLabel(job)}`,
-      );
-      tr.addEventListener('click', () => showJob(job.id));
-      tr.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          showJob(job.id);
-        }
-      });
-      const first = el('td'),
-        cell = el('div', 'job-cell');
-      const company = String(job.company || '?');
-      let hash = 0;
-      for (let i = 0; i < company.length; i++) hash += company.charCodeAt(i);
-      cell.append(el('div', `company-avatar tone-${hash % 4}`, company.slice(0, 1).toUpperCase()));
-      const title = el('div');
-      title.append(el('div', 'job-title', text(job.title, 'Untitled opportunity')));
-      const subtitle = el('div', 'job-sub');
-      subtitle.append(
-        document.createTextNode(`${company} · `),
-        el('span', 'source', text(job.source, 'Unknown source')),
-      );
-      title.append(subtitle);
-      cell.append(title);
-      first.append(cell);
-      const fresh = el('td');
-      fresh.append(
-        el(
-          'span',
-          `freshness ${bucket(job) <= 1 ? 'fresh' : ''}`,
-          job.bucket_label || labels[bucket(job)],
-        ),
-      );
-      fresh.title = job.posted_at ? prettyDate(job.posted_at, true) : 'No posting date supplied';
-      const fit = el('td'),
-        fitContent = el('div', 'fit-cell'),
-        score = fitNumber(job);
-      const bar = el('span', 'fit-bar'),
-        fill = el('i');
-      fill.style.width = `${score || 0}%`;
-      bar.append(fill);
-      fitContent.append(
-        bar,
-        document.createTextNode(score === null ? '—' : `${Math.round(score)}%`),
-      );
-      fit.append(fitContent);
-      const statusCell = el('td');
-      statusCell.append(badge(job));
-      const arrow = el('td', 'row-arrow');
-      arrow.append(icon('chevron'));
-      tr.append(first, fresh, fit, statusCell, arrow);
-      fragment.append(tr);
-    });
-    $('jobsBody').replaceChildren(fragment);
-    if (focusedJob) {
-      const row = Array.from($('jobsBody').rows).find((item) => item.dataset.jobId === focusedJob);
-      if (row) row.focus({ preventScroll: true });
-    }
+    $('jobsBody').replaceChildren(...jobs.map((job) => jobRow(job, false)));
     $('queueEmpty').hidden = jobs.length > 0;
-    if (!jobs.length && state.jobs.length) {
-      $('queueEmpty').className = 'filter-empty';
-      $('queueEmpty').replaceChildren(
-        el('p', '', 'No opportunities match these filters.'),
-        button('Clear filters', 'secondary', 'refresh', clearFilters),
-      );
-      $('queueEmpty').lastChild.style.marginTop = '16px';
-    } else if (!jobs.length && !state.jobs.length && !$('queueEmpty').querySelector('.empty-art')) {
-      $('queueEmpty').className = 'empty-state';
-      const art = el('div', 'empty-art');
-      art.append(icon('briefcase'), el('span', 'empty-art-spark'));
-      $('queueEmpty').replaceChildren(
-        art,
-        el('h3', '', 'No jobs in the pipeline'),
-        el(
-          'p',
-          '',
-          'Add a job link, import an email alert, or run a search. New listings appear here.',
-        ),
-        button('Add your first opportunity', 'secondary', 'plus', showImport),
-      );
-    }
+    $('queueEmpty').querySelector('h3').textContent = pool.length
+      ? 'No matching opportunities'
+      : 'Your next role starts here';
+    $('queueEmpty').querySelector('p').textContent = pool.length
+      ? 'Try another role, company or source.'
+      : 'Run a search or add a job link to start preparing.';
     $('visibleCount').textContent =
-      `${jobs.length} of ${state.jobs.length} ${state.jobs.length === 1 ? 'opportunity' : 'opportunities'}`;
+      `${number(jobs.length)} ${jobs.length === 1 ? 'opportunity' : 'opportunities'}`;
+    renderApplied();
   }
-  function clearFilters() {
-    activeFilter = 'all';
-    $('jobQuery').value = '';
-    $('sourceFilter').value = 'all';
-    $('statusFilter').value = 'all';
-    updateTabs();
-    renderJobs();
-  }
-  function updateTabs() {
-    document.querySelectorAll('[data-filter]').forEach((node) => {
-      const active = node.dataset.filter === activeFilter;
-      node.classList.toggle('active', active);
-      node.setAttribute('aria-selected', String(active));
-    });
+  function renderApplied() {
+    if (!state) return;
+    const query = $('appliedQuery').value.toLowerCase().trim();
+    const jobs = state.jobs
+      .filter(
+        (job) =>
+          isApplied(job) && `${job.title || ''} ${job.company || ''}`.toLowerCase().includes(query),
+      )
+      .sort(
+        (a, b) =>
+          (Date.parse(b.applied_at || b.confirmed_at) || 0) -
+          (Date.parse(a.applied_at || a.confirmed_at) || 0),
+      );
+    $('appliedBody').replaceChildren(...jobs.map((job) => jobRow(job, true)));
+    $('appliedEmpty').hidden = jobs.length > 0;
+    $('appliedCount').textContent =
+      `${number(jobs.length)} ${jobs.length === 1 ? 'application' : 'applications'}`;
   }
   function renderWorker() {
     const worker = state.worker || {},
       settings = state.settings || {};
-    const reviewing = (state.jobs || []).some((job) =>
-      ['opening', 'opened'].includes(job.review_session?.state),
-    );
-    const heartbeatAge = worker.heartbeat ? Date.now() - Date.parse(worker.heartbeat) : null;
-    const remoteWaiting = Number(state.remote_access?.waiting || 0) > 0;
-    let workerState = remoteWaiting
-      ? 'Waiting for your help'
-      : reviewing
-        ? 'Verification open'
-        : worker.submitting
-          ? 'Applying'
-          : worker.searching
-            ? 'Searching'
-            : settings.search_enabled || settings.submission_enabled
-              ? 'Idle'
-              : 'Paused';
-    if (heartbeatAge !== null && Number.isFinite(heartbeatAge) && heartbeatAge > 90000)
-      workerState = 'Heartbeat delayed';
-    $('workerState').textContent = workerState;
+    $('workerState').textContent = worker.searching
+      ? 'Searching for roles'
+      : settings.search_enabled
+        ? 'Search scheduled'
+        : 'Search paused';
     $('workerDot').className =
-      `dot ${workerState === 'Paused' || workerState.includes('delayed') ? 'amber' : 'teal'}`;
-    $('workerBadge').textContent = worker.searching || worker.submitting ? 'ACTIVE' : 'LOCAL';
-    $('workerCurrent').textContent = remoteWaiting
-      ? 'Open Remote access to finish sign-in or verification in the retained browser, then resume the application. Enabled searches continue.'
-      : reviewing
-        ? 'Finish or close the verification browser to continue the submission queue. Enabled searches continue.'
-        : text(
-            worker.current,
-            settings.search_enabled || settings.submission_enabled
-              ? 'Worker enabled. Submission readiness is shown separately above the pipeline.'
-              : 'Search and submissions are paused.',
-          );
+      `dot ${worker.searching || settings.search_enabled ? 'teal' : 'amber'}`;
+    $('workerCurrent').textContent = worker.searching
+      ? 'New listings will appear in your opportunities.'
+      : settings.search_enabled
+        ? `Checks every ${settings.search_interval_minutes || 30} minutes.`
+        : 'Search when you want, or enable automatic discovery.';
     $('heartbeat').textContent = relative(worker.heartbeat);
     $('lastSearch').textContent = relative(worker.last_search);
-    $('heartbeat').title = prettyDate(worker.heartbeat, true);
-    $('lastSearch').title = prettyDate(worker.last_search, true);
-    $('workerQueued').textContent = number(state.metrics?.queued);
-    const queued = sortedJobs(state.jobs.filter((job) => statusGroup(job) === 'queued'));
-    $('nextJob').textContent = text(queued[0]?.title, 'No queued opportunities');
-    $('nextJob').title = text(queued[0]?.title, 'No queued opportunities');
-    const searchLabel = settings.search_enabled ? 'Pause search' : 'Resume search';
-    const submissionLabel = settings.submission_enabled
-      ? 'Pause submissions'
-      : 'Resume submissions';
     $('toggleSearch').replaceChildren(
       icon(settings.search_enabled ? 'pause' : 'play'),
-      el('span', '', searchLabel),
+      el('span', '', settings.search_enabled ? 'Pause search' : 'Resume search'),
     );
-    $('toggleSubmissions').replaceChildren(
-      icon(settings.submission_enabled ? 'pause' : 'play'),
-      el('span', '', submissionLabel),
-    );
-    const running = settings.search_enabled || settings.submission_enabled;
-    $('toggleWorker').replaceChildren(
-      icon(running ? 'stop' : 'play'),
-      el('span', '', running ? 'Stop worker' : 'Start worker'),
-    );
-    $('workerError').textContent = text(worker.last_error, '');
-    $('workerError').hidden = !worker.last_error;
-    let extra = $('workerExtra');
-    if (!extra) {
-      extra = el('div', 'worker-extended');
-      extra.id = 'workerExtra';
-      $('workerError').before(extra);
-    }
-    extra.replaceChildren();
-    [
-      ['Local model', worker.model_status],
-      ['Email alerts', worker.email_status],
-      ['Keep awake', worker.keep_awake === true ? 'Active on AC power' : 'Inactive'],
-    ].forEach(([label, value]) => {
-      if (value === undefined || value === null) return;
-      const row = el('div');
-      row.append(el('span', '', label), el('strong', '', text(value)));
-      extra.append(row);
-    });
-    ['searchNow', 'toggleSearch', 'toggleSubmissions', 'toggleWorker'].forEach((id) => {
-      $(id).disabled = !connected;
-    });
-    const fragment = document.createDocumentFragment();
-    labels.forEach((label, index) => {
-      const row = el('div', 'freshness-row');
-      row.append(
-        el('span', 'freshness-rank', index + 1),
-        el('span', 'freshness-label', label),
-        el('span', 'freshness-count', queued.filter((job) => bucket(job) === index).length),
-      );
-      fragment.append(row);
-    });
-    $('freshnessBuckets').replaceChildren(fragment);
-  }
-  function renderActivity() {
-    const events = [...(state.events || [])]
-      .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0))
-      .slice(0, 7);
-    const fragment = document.createDocumentFragment();
-    events.forEach((event) => {
-      const level = String(event.level || 'info').toLowerCase();
-      const category = level.includes('error')
-        ? 'error'
-        : level.includes('warn')
-          ? 'warning'
-          : level.includes('success')
-            ? 'success'
-            : '';
-      const row = el('div', 'activity-row'),
-        indicator = el('div', `activity-icon ${category}`);
-      indicator.append(
-        icon(
-          category === 'error' || category === 'warning'
-            ? 'alert'
-            : category === 'success'
-              ? 'check'
-              : 'pulse',
-        ),
-      );
-      const time = el('time', 'activity-time', relative(event.at));
-      time.title = prettyDate(event.at, true);
-      if (event.at) time.dateTime = event.at;
-      row.append(
-        indicator,
-        el('div', 'activity-message', text(event.message, 'Activity recorded')),
-        time,
-      );
-      fragment.append(row);
-    });
-    if (!events.length)
-      fragment.append(el('div', 'activity-empty', 'No worker activity recorded.'));
-    $('activityList').replaceChildren(fragment);
-  }
-  const blockerTypes = {
-    receipt: {
-      label: 'Receipt / verification pending',
-      icon: 'clock',
-      help: 'Submission was attempted, but no employer receipt has been observed. Review the outcome before retrying.',
-    },
-    authentication: {
-      label: 'Sign-in or verification',
-      icon: 'lock',
-      help: 'Open the application in your regular browser to use its saved sessions and complete any verification.',
-    },
-    unanswered: {
-      label: 'Unanswered required fields',
-      icon: 'file',
-      help: 'Provide explicit answers; required unknown values hold the application.',
-    },
-    unsupported: {
-      label: 'Unsupported application form',
-      icon: 'external',
-      help: 'Review the employer form and recorded browser evidence.',
-    },
-    details: {
-      label: 'Missing job details',
-      icon: 'briefcase',
-      help: 'Import the employer posting with its original description.',
-    },
-    automation: {
-      label: 'Automation error',
-      icon: 'alert',
-      help: 'Review the recorded error before retrying the opportunity.',
-    },
-    other: {
-      label: 'Other review requirement',
-      icon: 'info',
-      help: 'Open the opportunity to inspect its recorded review reason.',
-    },
-  };
-  function canOpenApplicationTab(job) {
-    return (
-      !['active', 'confirmed', 'manual', 'skipped'].includes(statusGroup(job)) &&
-      Boolean(safeURL(job.auth_url || job.application?.auth_url || job.apply_url || job.url))
-    );
-  }
-  async function openJobBrowserTab(job, node, purpose = 'application') {
-    if (node) node.disabled = true;
-    try {
-      const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/browser-tab`, { purpose });
-      const opened = result.status === 'opened';
-      toast(
-        resultMessage(
-          result,
-          opened
-            ? 'Opened in your regular browser using its saved sessions. Record the verified application outcome here when finished.'
-            : 'The browser tab could not be opened.',
-        ),
-        !opened,
-      );
-      await poll();
-      if (
-        opened &&
-        purpose === 'application' &&
-        $('modal').open &&
-        String(selectedJob) === String(job.id)
-      )
-        showJob(job.id);
-    } catch (error) {
-      if ($('modal').open) dialogError(error);
-      else toast(error.message, true);
-    } finally {
-      if (node) node.disabled = false;
-    }
-  }
-  function applicationTabButton(job) {
-    const open = button('Open application tab', 'primary', 'external');
-    open.addEventListener('click', () => openJobBrowserTab(job, open));
-    return open;
-  }
-  function classifyBlocker(job) {
-    if (job.uncertain) return 'receipt';
-    const structured = job.blocker_category || job.application?.blocker_category;
-    if (structured && blockerTypes[structured]) return structured;
-    const reason =
-      `${job.note || job.application?.note || ''} ${text(job.unknown_fields, '')}`.toLowerCase();
-    if (
-      /login|log in|sign[ -]?in|captcha|multi.factor|authentication|verification requires/.test(
-        reason,
-      )
-    )
-      return 'authentication';
-    if (
-      /fields need saved answers|unanswered|unknown required|required.*(?:answer|field)|answer.*required/.test(
-        reason,
-      )
-    )
-      return 'unanswered';
-    if (
-      /no supported application form|no recognized.*(?:next|submit)|unsupported.*form|application form.*not.*found/.test(
-        reason,
-      )
-    )
-      return 'unsupported';
-    if (
-      /usable job description|description unavailable|missing.*(?:description|employer|job detail)|source did not provide/.test(
-        reason,
-      )
-    )
-      return 'details';
-    if (statusGroup(job) === 'error' || /error:|frame was detached|automation error/.test(reason))
-      return 'automation';
-    return 'other';
-  }
-  function blockedJobs(kind) {
-    return (state?.jobs || []).filter(
-      (job) =>
-        ['review', 'error'].includes(statusGroup(job)) && (!kind || classifyBlocker(job) === kind),
-    );
-  }
-  function showBlockers(kind) {
-    const type = blockerTypes[kind];
-    if (!type || !state) return;
-    const content = openModal(type.label, 'RECORDED APPLICATION BLOCKERS', true);
-    content.append(el('p', 'modal-note', type.help));
-    if (kind === 'unanswered')
-      content.append(button('Set up application answers', 'primary', 'edit', showAnswersEditor));
-    if (kind === 'details')
-      content.append(button('Import employer posting', 'primary', 'plus', showImport));
-    const list = el('div', 'blocker-job-list');
-    blockedJobs(kind).forEach((job) => {
-      const card = el('article', 'blocker-job-card'),
-        header = el('div', 'blocker-job-heading');
-      header.append(
-        el('h3', '', text(job.title, 'Untitled opportunity')),
-        el('span', '', text(job.company)),
-      );
-      card.append(
-        header,
-        el('p', '', text(job.note || job.application?.note, 'No review reason was returned.')),
-      );
-      const actions = el('div', 'blocker-job-actions');
-      actions.append(button('View details & evidence', 'secondary', 'file', () => showJob(job.id)));
-      if (canOpenApplicationTab(job)) actions.append(applicationTabButton(job));
-      card.append(actions);
-      list.append(card);
-    });
-    if (!list.childNodes.length)
-      list.append(el('p', 'modal-note', 'No opportunities currently have this recorded blocker.'));
-    content.append(list);
-  }
-  function renderDiagnostics() {
-    const jobs = blockedJobs(),
-      queued =
-        state.metrics?.queued ?? state.jobs.filter((job) => statusGroup(job) === 'queued').length;
-    const signature = JSON.stringify([
-      jobs.map((job) => [
-        job.id,
-        job.status,
-        job.note,
-        job.application?.note,
-        job.unknown_fields,
-        job.uncertain,
-        job.blocker_category,
-        job.review_reason,
-        job.application?.review_reason,
-      ]),
-      queued,
-      state.settings?.search_enabled,
-      state.settings?.submission_enabled,
-      state.worker?.submitting,
-    ]);
-    if (signature === diagnosticsSignature) return;
-    diagnosticsSignature = signature;
-    const panel = $('diagnosticsPanel'),
-      heading = el('div', 'panel-heading diagnostics-heading'),
-      title = el('div');
-    title.append(
-      el('h2', '', jobs.length ? 'Why applications are waiting' : 'Submission readiness'),
-    );
-    title.firstChild.id = 'blockersTitle';
-    title.append(
+    $('toggleSearch').disabled = !connected;
+    $('searchNow').disabled = !connected;
+    $('workerExtra').replaceChildren(
+      el('span', '', 'Document preparation'),
       el(
-        'p',
+        'strong',
         '',
-        jobs.length
-          ? `${jobs.length} ${jobs.length === 1 ? 'opportunity needs' : 'opportunities need'} attention. Counts come from their current review and error reasons.`
-          : 'Worker activity and submission readiness are tracked separately.',
+        worker.model_status
+          ? friendlyMessage(worker.model_status, 'Local model status unavailable')
+          : 'Uses your saved career facts',
       ),
     );
-    heading.append(title);
-    const summary = el(
-      'span',
-      'readiness-badge',
-      state.worker?.submitting
-        ? 'Application checks in progress'
-        : !state.settings?.submission_enabled
-          ? 'Submissions paused'
-          : queued
-            ? `${queued} queued for form checks`
-            : 'No jobs queued to attempt',
-    );
-    heading.append(summary);
-    panel.replaceChildren(heading);
-    const readiness = el('div', 'readiness-line');
-    readiness.append(
-      el('span', '', `Search ${state.settings?.search_enabled ? 'enabled' : 'paused'}`),
-      el('span', '', `Submissions ${state.settings?.submission_enabled ? 'enabled' : 'paused'}`),
-      el('strong', '', `${queued} queued · ${jobs.length} held`),
-    );
-    panel.append(
-      readiness,
-      el(
-        'p',
-        'readiness-note',
-        'An enabled worker does not mean an application can be submitted. Queued opportunities still need form checks; saved answers and successful sign-in do not guarantee submission.',
-      ),
-    );
-    const cards = el('div', 'blocker-grid');
-    Object.entries(blockerTypes).forEach(([kind, type]) => {
-      const count = jobs.filter((job) => classifyBlocker(job) === kind).length;
-      if (kind === 'other' && !count) return;
-      const card = el('button', `blocker-card ${count ? 'has-blockers' : ''}`);
-      card.type = 'button';
-      card.setAttribute(
-        'aria-label',
-        `${type.label}: ${count} opportunities. View recorded reasons.`,
-      );
-      const top = el('div', 'blocker-card-top');
-      top.append(icon(type.icon), el('strong', '', count));
-      card.append(
-        top,
-        el('span', 'blocker-card-label', type.label),
-        el(
-          'span',
-          'blocker-card-link',
-          count ? 'View reasons & next step →' : 'No recorded blockers',
+  }
+  function renderProblems() {
+    const open = problemItems.filter((problem) => !problem.resolved);
+    $('problemsNavCount').hidden = !open.length;
+    $('problemsNavCount').textContent = number(open.length);
+    $('problemCount').textContent = open.length ? `${open.length} to review` : '';
+    const items = open.map((problem) => {
+      const card = el('article', 'panel problem-card'),
+        body = el('div');
+      const heading = el('h2');
+      heading.append(
+        externalJobLink(
+          { id: problem.job_id || null, url: problem.url },
+          `${text(problem.title, 'Job search')} · ${text(problem.company, 'JobPilot')}`,
         ),
       );
-      card.addEventListener('click', () => showBlockers(kind));
-      cards.append(card);
+      const fallback = /email/i.test(problem.category || '')
+        ? 'Email alerts could not be checked. Review your email connection and try again.'
+        : /search|discovery/i.test(problem.category || '')
+          ? 'This search could not finish. Try again later or add the job link yourself.'
+          : 'Documents could not be prepared. Open this opportunity and try generating them again.';
+      body.append(
+        heading,
+        el('p', '', friendlyMessage(problem.message, fallback)),
+        el('time', '', prettyDate(problem.created_at, true)),
+      );
+      const resolve = button('Mark resolved', 'secondary compact', 'check');
+      resolve.addEventListener('click', async () => {
+        const result = await action(
+          resolve,
+          `/api/problems/${encodeURIComponent(problem.id)}/resolve`,
+          {},
+          'Problem marked resolved.',
+        );
+        if (result) await poll();
+      });
+      card.append(body, resolve);
+      return card;
     });
-    panel.append(cards);
-    const actions = el('div', 'diagnostics-actions');
-    actions.append(button('Set up required answers', 'primary', 'edit', showAnswersEditor));
-    panel.append(actions);
+    if (!items.length) {
+      const empty = el('div', 'panel empty-state');
+      empty.append(
+        icon(problemsAvailable ? 'check' : 'info'),
+        el(
+          'h2',
+          '',
+          problemsAvailable ? 'No problems to review' : 'Problems are temporarily unavailable',
+        ),
+        el(
+          'p',
+          '',
+          problemsAvailable
+            ? 'Messages that need your attention will appear here.'
+            : 'The local service will reconnect automatically.',
+        ),
+      );
+      items.push(empty);
+    }
+    $('problemsList').replaceChildren(...items);
   }
   function renderIdentity() {
     const profile = state.profile || {};
@@ -967,36 +675,6 @@
     }
     $('experienceList').replaceChildren(fragment);
   }
-  function renderAnswers() {
-    if (!state) return;
-    const entries = Object.entries(state.answers || {}),
-      fragment = document.createDocumentFragment();
-    entries.forEach(([key, value]) => {
-      const row = el('div', 'answer-row');
-      row.append(
-        el(
-          'div',
-          'answer-key',
-          commonAnswerSchema.find((field) => field.key === key)?.label || key,
-        ),
-        el(
-          'div',
-          'answer-value',
-          value === null || value === '' ? 'Unknown — needs your answer' : text(value),
-        ),
-      );
-      fragment.append(row);
-    });
-    if (!entries.length)
-      fragment.append(
-        el(
-          'div',
-          'answer-empty',
-          'No screening answers saved yet. Add answers only after you have confirmed the response. Required unknown answers will hold the application for review.',
-        ),
-      );
-    $('answersList').replaceChildren(fragment);
-  }
   function renderSettings(force = false) {
     if (!state || (settingsDirty && !force)) return;
     const settings = state.settings || {},
@@ -1012,24 +690,93 @@
     if (force) settingsDirty = false;
   }
   function renderConnections() {
-    const connections = state?.connections || {};
-    ['linkedin', 'indeed', 'employer'].forEach((platform) => {
-      const result = loginResults[platform] || connections[platform];
-      const label = $(platform + 'Status');
-      if (!result) return;
-      label.textContent = `Worker session: ${typeof result === 'string' ? result : resultMessage(result, result.status ? String(result.status).replaceAll('_', ' ') : 'Sign-in requested; session status is not verified.')}`;
-    });
-    if (!emailDirty && state?.settings?.email) {
-      const email = state.settings.email,
-        form = $('emailForm');
-      ['host', 'port'].forEach((key) => {
+    const email = state?.settings?.email || {},
+      sync = state?.email_sync || {};
+    const form = $('emailForm');
+    if (!emailDirty) {
+      ['host', 'port', 'limit', 'lookback_days'].forEach((key) => {
         if (email[key] !== undefined) form.elements.namedItem(key).value = email[key];
       });
       form.elements.namedItem('user').value = text(email.username ?? email.user, '');
       form.elements.namedItem('folder').value = text(email.mailbox ?? email.folder, 'INBOX');
-      form.elements.namedItem('enabled').checked = Boolean(email.enabled);
+      form.elements.namedItem('enabled').checked = email.enabled ?? true;
+    }
+    const busy = ['checking', 'syncing'].includes(sync.state);
+    form.querySelector('[type=submit]').disabled = busy || !connected;
+    $('syncEmail').disabled = busy || !connected;
+    $('emailStatus').textContent = friendlyMessage(
+      sync.message,
+      busy
+        ? 'Checking your inbox…'
+        : sync.state === 'connected'
+          ? 'Inbox connection verified.'
+          : sync.credential_saved || email.credential_saved
+            ? 'App password saved. Connect & test to verify the inbox.'
+            : 'Not connected. Add your Gmail address and an app password.',
+    );
+    const stats = $('emailSyncStats');
+    stats.replaceChildren();
+    stats.hidden = !sync.checked_at && sync.messages_checked === undefined;
+    if (!stats.hidden) {
+      [
+        ['Last checked', sync.checked_at ? prettyDate(sync.checked_at, true) : 'Not checked'],
+        ['Messages checked', sync.messages_checked ?? 0],
+        ['Job links found', sync.links_found ?? 0],
+        ['Opportunities added', sync.imported ?? 0],
+      ].forEach(([label, value]) => {
+        const item = el('div');
+        item.append(el('span', '', label), el('strong', '', value));
+        stats.append(item);
+      });
+      if (sync.truncated)
+        stats.append(
+          el(
+            'p',
+            'truncated-warning',
+            `Checked ${number(sync.messages_checked ?? 0)} of ${number(sync.messages_available ?? 0)} recent messages; increase the scan limit in Advanced.`,
+          ),
+        );
+    }
+  }
+  async function emailOperation(operation) {
+    const form = $('emailForm'),
+      fields = form.elements,
+      save = form.querySelector('[type=submit]'),
+      sync = $('syncEmail');
+    if (!form.reportValidity()) return;
+    save.disabled = true;
+    sync.disabled = true;
+    try {
+      if (operation === 'check' || emailDirty) {
+        await api('/api/email', {
+          host: fields.namedItem('host').value.trim(),
+          port: Number(fields.namedItem('port').value),
+          user: fields.namedItem('user').value.trim(),
+          password: fields.namedItem('password').value,
+          folder: fields.namedItem('folder').value.trim(),
+          enabled: fields.namedItem('enabled').checked,
+          limit: Number(fields.namedItem('limit').value),
+          lookback_days: Number(fields.namedItem('lookback_days').value),
+        });
+        emailDirty = false;
+        fields.namedItem('password').value = '';
+      }
+      const result = await api(`/api/email/${operation}`, {});
       $('emailStatus').textContent =
-        `${text(state.worker?.email_status, email.enabled ? 'Configured' : 'Not configured')}. ${email.credential_saved ? 'Credential saved in Windows storage. ' : ''}Inbox access has not been verified by this dashboard.`;
+        operation === 'check'
+          ? 'Checking the inbox connection…'
+          : 'Checking recent messages for job links…';
+      toast(operation === 'check' ? 'Inbox check started.' : 'Email sync started.');
+      await poll();
+      return result;
+    } catch (error) {
+      $('emailStatus').textContent = friendlyMessage(
+        error.message,
+        'The inbox could not be checked. Verify your Gmail address and app password, then try again.',
+      );
+      toast($('emailStatus').textContent, true);
+    } finally {
+      renderConnections();
     }
   }
   function render() {
@@ -1037,40 +784,50 @@
     renderIdentity();
     renderJobs();
     renderWorker();
-    renderActivity();
     renderConnections();
-    renderDiagnostics();
+    renderProblems();
     if (activeView === 'profile') renderProfile();
-    if (activeView === 'answers') renderAnswers();
     renderSettings();
+    if (selectedJob !== null && $('modal').open && $('modalContent').dataset.jobId) {
+      const job = state.jobs.find((item) => String(item.id) === String(selectedJob));
+      if (job && JSON.stringify(job) !== detailSignature) showJob(job.id);
+    }
   }
   async function poll() {
     if (polling) return;
     polling = true;
     try {
-      const response = await fetch('/api/state', { cache: 'no-store' });
-      if (!response.ok) throw new Error(`Local service returned HTTP ${response.status}.`);
+      const [response, issues] = await Promise.all([
+        fetch('/api/state', { cache: 'no-store' }),
+        fetch('/api/problems', { cache: 'no-store' }).catch(() => null),
+      ]);
+      if (!response.ok) throw new Error('The local service is unavailable.');
       const result = await response.json();
       if (!result || !Array.isArray(result.jobs))
-        throw new Error('The local service returned an incomplete dashboard state.');
+        throw new Error('Dashboard data is not ready yet.');
       state = result;
       connected = true;
+      try {
+        const data = issues?.ok ? await issues.json() : null;
+        problemsAvailable = Array.isArray(data?.problems);
+        if (problemsAvailable) problemItems = data.problems;
+      } catch (_) {
+        problemsAvailable = false;
+      }
       $('connectionDot').className = 'dot teal';
       $('connectionLabel').textContent = 'Local service connected';
       $('serviceBanner').hidden = true;
       $('lastUpdated').textContent =
         `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date())}`;
       render();
-    } catch (error) {
+    } catch (_) {
       connected = false;
       $('connectionDot').className = 'dot amber';
       $('connectionLabel').textContent = 'Local service unavailable';
       $('serviceBanner').hidden = false;
       $('serviceBanner').textContent =
-        `The local service is unavailable. ${error.message} JobPilot will reconnect automatically. ${state ? 'Displayed data is from the last successful update.' : 'Start JobPilot using its desktop launcher.'}`;
-      $('workerState').textContent = 'Disconnected';
-      $('workerDot').className = 'dot amber';
-      ['searchNow', 'toggleSearch', 'toggleSubmissions', 'toggleWorker'].forEach((id) => {
+        'The local service is unavailable. JobPilot will reconnect automatically. Displayed data may be from the last update.';
+      ['searchNow', 'toggleSearch'].forEach((id) => {
         $(id).disabled = true;
       });
     } finally {
@@ -1078,7 +835,7 @@
     }
   }
   function showView(view) {
-    if (!viewLabels[view]) return;
+    if (!viewLabels[view]) view = 'overview';
     activeView = view;
     document.querySelectorAll('.view').forEach((node) => {
       node.hidden = node.id !== `view-${view}`;
@@ -1090,8 +847,9 @@
     });
     $('breadcrumbCurrent').textContent = viewLabels[view];
     if (view === 'profile') renderProfile();
-    if (view === 'answers') renderAnswers();
     if (view === 'settings') renderSettings();
+    if (view === 'applied') renderApplied();
+    if (view === 'problems') renderProblems();
     if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
     window.scrollTo({ top: 0, behavior: 'instant' });
   }
@@ -1099,6 +857,7 @@
     $('modalTitle').textContent = title;
     $('modalEyebrow').textContent = eyebrow;
     $('modalContent').replaceChildren();
+    delete $('modalContent').dataset.jobId;
     $('modal').style.width = wide ? 'min(820px, calc(100% - 32px))' : '';
     if (!$('modal').open) $('modal').showModal();
     return $('modalContent');
@@ -1359,13 +1118,7 @@
       });
     }
     const footer = el('div', 'form-footer full');
-    footer.append(
-      el(
-        'p',
-        'form-note',
-        'A recorded opportunity becomes confirmed only after a verified employer receipt.',
-      ),
-    );
+    footer.append(el('p', 'form-note', 'Imported jobs appear in your opportunities.'));
     const submit = button('Add to pipeline', 'primary', 'plus');
     submit.type = 'submit';
     footer.append(submit);
@@ -1411,141 +1164,103 @@
   function showJob(id) {
     const job = state?.jobs.find((item) => String(item.id) === String(id));
     if (!job) return;
+    const content = openModal(text(job.title, 'Opportunity details'), 'REVIEW & PREPARE', true);
     selectedJob = job.id;
-    const content = openModal(text(job.title, 'Opportunity details'), 'OPPORTUNITY DETAILS', true);
-    const subtitle = el('div', 'detail-subtitle');
-    subtitle.append(el('span', '', `${text(job.company)} · ${text(job.source)}`), badge(job));
-    content.append(subtitle);
+    content.dataset.jobId = String(job.id);
+    detailSignature = JSON.stringify(job);
+    content.append(
+      el(
+        'p',
+        'detail-subtitle',
+        `${text(job.company)} · ${text(job.location, 'Location not specified')}`,
+      ),
+    );
     const facts = el('div', 'detail-facts');
     [
-      ['Posting window', job.bucket_label || labels[bucket(job)]],
-      [
-        'Fit assessment',
-        fitNumber(job) === null ? 'Not assessed' : `${Math.round(fitNumber(job))}%`,
-      ],
-      ['Location', text(job.location, 'Not specified')],
+      ['Fit', fitNumber(job) === null ? 'Not assessed' : `${Math.round(fitNumber(job))}%`],
+      ['Posted', job.bucket_label || labels[bucket(job)]],
+      ['Tracking', isApplied(job) ? 'Applied' : 'Not applied'],
     ].forEach(([label, value]) => {
       const fact = el('div', 'detail-fact');
       fact.append(el('span', '', label), el('strong', '', value));
       facts.append(fact);
     });
     content.append(facts);
-    const link = safeURL(job.url);
-    if (link) {
-      const original = button('View original posting', 'secondary', 'external');
-      original.addEventListener('click', () => openJobBrowserTab(job, original, 'posting'));
-      content.append(original);
+    const links = el('div', 'detail-links');
+    const posting = externalJobLink(job, 'View job posting');
+    posting.classList.add('button', 'secondary');
+    posting.prepend(icon('external'));
+    links.append(posting);
+    if (safeURL(job.apply_url) && job.apply_url !== job.url) {
+      const apply = externalJobLink(job, 'Open application page', job.apply_url);
+      apply.classList.add('button', 'secondary');
+      apply.prepend(icon('external'));
+      links.append(apply);
     }
-    if (!job.uncertain && canOpenApplicationTab(job)) {
-      content.append(
-        applicationTabButton(job),
-        el(
-          'p',
-          'modal-note',
-          'Uses your regular browser and its saved sessions. Use browser autofill or complete the fields yourself; application documents are available below. JobPilot cannot observe this tab automatically, so record the verified outcome here.',
-        ),
+    content.append(links);
+    const keywordSection = el('section', 'detail-section');
+    keywordSection.append(el('h3', '', 'Keywords from the job posting'));
+    const keywords = job.keywords || {},
+      terms =
+        Array.isArray(keywords.terms) && keywords.terms.length
+          ? keywords.terms
+          : [...(keywords.tools || []), ...(keywords.skills || [])];
+    const unique = [...new Set(terms.filter((term) => typeof term === 'string' && term.trim()))],
+      chips = el('div', 'keyword-chips');
+    unique.forEach((term) => {
+      const matched = (keywords.matched || []).some(
+        (value) => String(value).toLowerCase() === term.toLowerCase(),
       );
-    }
-    const status = el('section', 'detail-section');
-    status.append(el('h3', '', 'Status & timeline'));
-    const imported = el('div', 'timeline-item'),
-      importedBody = el('div', '', 'Opportunity added');
-    importedBody.append(el('small', '', prettyDate(job.created_at, true)));
-    imported.append(importedBody);
-    status.append(imported);
-    const current = el('div', 'timeline-item'),
-      currentBody = el('div', '', statusLabel(job));
-    currentBody.append(
-      el('small', '', text(job.note || job.application?.note, 'Waiting for worker assessment.')),
+      const chip = el('span', `keyword-chip ${matched ? 'matched' : ''}`, term);
+      if (matched) chip.title = 'Also present in your saved profile';
+      chips.append(chip);
+    });
+    keywordSection.append(
+      unique.length
+        ? chips
+        : el('p', 'modal-note', 'Keywords will appear after the job description is assessed.'),
     );
-    current.append(currentBody);
-    status.append(current);
-    if (job.posted_at) {
-      const date = el('div', 'timeline-item'),
-        body = el('div', '', 'Source posting date');
-      body.append(el('small', '', prettyDate(job.posted_at, true)));
-      date.append(body);
-      status.append(date);
-    }
-    if (Array.isArray(job.timeline))
-      job.timeline.forEach((event) => {
-        const item = el('div', 'timeline-item'),
-          body = el('div', '', text(event.message || event.status));
-        body.append(el('small', '', prettyDate(event.at, true)));
-        item.append(body);
-        status.append(item);
-      });
-    content.append(status);
-    const manualHandoff =
-      job.status === 'needs_review' &&
-      job.browser_handoff?.mode === 'default_browser' &&
-      job.browser_handoff?.state !== 'closed';
-    if (job.uncertain || manualHandoff) {
-      const resolution = el('section', 'detail-section');
-      resolution.append(
-        el(
-          'h3',
-          '',
-          job.uncertain ? 'Verify the uncertain submission' : 'Record application outcome',
-        ),
-        el(
-          'p',
-          'modal-note',
-          'Check the employer portal or receipt email, then record the employer receipt or explain how you verified that no application was submitted. Automatic retries stay paused while this application is in review.',
-        ),
+    content.append(keywordSection);
+    const docs = el('section', 'detail-section document-section');
+    docs.append(
+      el('h3', '', 'Your application documents'),
+      el('p', 'modal-note', 'Built from your saved career facts. Review them before applying.'),
+    );
+    const entries = documentEntries(job),
+      downloads = el('div', 'artifact-links');
+    entries.forEach(([label, path]) => {
+      const link = el('a', 'button secondary');
+      link.href = `/api/artifact?path=${encodeURIComponent(path)}`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.setAttribute('download', '');
+      link.append(icon('download'), document.createTextNode(label));
+      downloads.append(link);
+    });
+    if (entries.length) docs.append(downloads);
+    else docs.append(el('p', 'document-empty', 'No documents generated for this role yet.'));
+    const busy = ['preparing', 'applying', 'submitting'].includes(job.status),
+      prepare = button(
+        busy
+          ? 'Generating documents…'
+          : entries.length
+            ? 'Regenerate documents'
+            : 'Generate documents',
+        'primary',
+        'file',
       );
-      if (job.uncertain && canOpenApplicationTab(job)) {
-        resolution.append(
-          el(
-            'p',
-            'modal-note',
-            'Submission was already attempted. Check your employer account or receipt email before submitting again. This opens your regular browser with its saved sessions. Use browser autofill or complete the fields yourself; application documents are available below. After completing verification, record the receipt here. JobPilot cannot observe this browser tab automatically.',
-          ),
-          applicationTabButton(job),
-        );
-      }
-      const form = el('form', 'form-grid');
-      const choiceLabel = el('label', 'full', 'Verified outcome'),
-        choice = el('select');
-      choice.name = 'outcome';
-      choice.required = true;
-      [
-        ['', 'Choose an outcome you verified'],
-        ['confirmed', 'I verified an employer submission receipt'],
-        ['not_submitted', 'I verified that no application was submitted'],
-      ].forEach(([value, label]) => {
-        const option = el('option', '', label);
-        option.value = value;
-        choice.append(option);
-      });
-      choiceLabel.append(choice);
-      form.append(choiceLabel);
-      const evidence = formField(
-        form,
-        'Receipt / verification evidence',
-        'evidence',
-        'textarea',
-        '',
-        true,
-        'Record the receipt ID, employer message, or how you checked that no application was submitted.',
+    prepare.disabled = busy;
+    prepare.addEventListener('click', async () => {
+      const result = await action(
+        prepare,
+        `/api/jobs/${encodeURIComponent(job.id)}/prepare`,
+        {},
+        'Document generation requested.',
       );
-      evidence.required = true;
-      const save = button('Save verified outcome', 'primary', 'check');
-      save.type = 'submit';
-      form.append(save);
-      resolution.append(form);
-      content.append(resolution);
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const result = await action(
-          save,
-          `/api/jobs/${encodeURIComponent(job.id)}/resolve`,
-          { outcome: choice.value, evidence: evidence.value.trim() },
-          'Verified outcome recorded.',
-        );
-        if (result) showJob(job.id);
-      });
-    }
+      if (result) showJob(job.id);
+    });
+    docs.append(prepare);
+    content.append(docs);
     const description = el('section', 'detail-section');
     description.append(
       el('h3', '', 'Job description'),
@@ -1554,101 +1269,26 @@
         'detail-description',
         text(
           job.description,
-          'No description was returned for this opportunity. Open the original posting for its current requirements.',
+          'No description is available. Open the job posting for the current requirements.',
         ),
       ),
     );
     content.append(description);
-    [
-      ['Application documents', job.application?.documents || job.documents],
-      ['Submission evidence', job.application?.evidence || job.evidence],
-    ].forEach(([title, artifacts]) => {
-      const section = el('section', 'detail-section');
-      section.append(el('h3', '', title));
-      const entries = artifactEntries(artifacts).filter(
-        ([, path]) => typeof path === 'string' && /^(?:[A-Za-z]:[\\/]|\/)/.test(path),
+    const actions = el('div', 'detail-actions'),
+      track = button(
+        isApplied(job) ? 'Move back to opportunities' : 'Mark as applied',
+        'secondary',
+        'check',
       );
-      if (!entries.length)
-        section.append(
-          el(
-            'p',
-            '',
-            title === 'Submission evidence'
-              ? 'No submission evidence recorded yet.'
-              : 'No application package prepared yet.',
-          ),
-        );
-      else {
-        const links = el('div', 'artifact-links');
-        entries.forEach(([label, path]) => {
-          const item = el('a', 'button secondary');
-          item.href = `/api/artifact?path=${encodeURIComponent(path)}`;
-          item.target = '_blank';
-          item.rel = 'noopener noreferrer';
-          item.append(
-            icon(title === 'Submission evidence' ? 'external' : 'download'),
-            document.createTextNode(label.replaceAll('_', ' ')),
-          );
-          links.append(item);
-        });
-        section.append(links);
-      }
-      content.append(section);
-    });
-    const actions = el('div', 'detail-actions');
-    const busy = ['applying', 'submitting', 'preparing'].includes(
-      String(job.status || '').toLowerCase(),
-    );
-    const prepare = button('Prepare documents', 'primary', 'file', async () => {
-      const result = await action(
-        prepare,
-        `/api/jobs/${encodeURIComponent(job.id)}/prepare`,
-        {},
-        'Document preparation requested. Follow its progress in activity.',
-      );
-      if (result) showJob(job.id);
-    });
-    prepare.disabled = Boolean(
-      job.uncertain ||
-      manualHandoff ||
-      busy ||
-      ['confirmed', 'manual', 'skipped'].includes(statusGroup(job)),
-    );
-    if (prepare.disabled)
-      prepare.title =
-        'Preparation is unavailable while this opportunity is complete, skipped, busy or awaiting receipt verification.';
-    actions.append(prepare);
-    if (!['confirmed', 'manual', 'skipped'].includes(statusGroup(job))) {
-      const retry = button('Retry / re-evaluate', 'secondary', 'refresh', async () => {
-        const result = await action(
-          retry,
-          `/api/jobs/${encodeURIComponent(job.id)}/retry`,
-          {},
-          'Opportunity returned for worker assessment.',
-        );
-        if (result) showJob(job.id);
-      });
-      retry.disabled = Boolean(job.uncertain || manualHandoff || busy);
-      actions.append(retry);
-      const skip = button('Skip opportunity', 'danger-button', 'close', async () => {
-        const result = await action(
-          skip,
-          `/api/jobs/${encodeURIComponent(job.id)}/skip`,
-          {},
-          'Opportunity skipped.',
-        );
-        if (result) closeModal();
-      });
-      skip.disabled = busy;
-      actions.append(skip);
-    }
+    track.disabled = busy;
+    track.addEventListener('click', () => setApplied(job, !isApplied(job), track));
+    const remove = button('Remove opportunity', 'quiet danger-text', 'trash');
+    remove.disabled = busy;
+    remove.addEventListener('click', () => removeJob(job, remove));
+    actions.append(track, remove);
     content.append(
       actions,
-      el(
-        'p',
-        'error-help',
-        'Preparation creates documents. Automatic confirmations require a verified submission receipt. Manually verified outcomes are tracked separately. Uncertain submissions remain in review.',
-      ),
+      el('p', 'form-note', 'Apply in your regular browser, then mark the role as applied here.'),
     );
   }
   function showProfileEditor() {
@@ -1716,232 +1356,6 @@
       }
     });
   }
-  function showAnswersEditor(mode = 'common') {
-    if (!state) {
-      toast('Wait for the local service to connect.', true);
-      return;
-    }
-    mode = mode === 'advanced' ? 'advanced' : 'common';
-    const content = openModal(
-      mode === 'common' ? 'Set up common application answers' : 'Edit exact question answers',
-      'YOUR EXPLICIT RESPONSES',
-      true,
-    );
-    const tabs = el('div', 'modal-tabs');
-    [
-      ['common', 'Common answers'],
-      ['advanced', 'Exact question answers · advanced'],
-    ].forEach(([key, label]) => {
-      const tab = el('button', `modal-tab ${mode === key ? 'active' : ''}`, label);
-      tab.type = 'button';
-      tab.addEventListener('click', () => showAnswersEditor(key));
-      tabs.append(tab);
-    });
-    content.append(tabs);
-    if (mode === 'common') {
-      content.append(
-        el(
-          'p',
-          'modal-note',
-          'Provide these one-time facts only when you know the answer. Unknown values are left out. Your saved contact details supply your name, phone and location; no screening eligibility or consent is guessed.',
-        ),
-      );
-      const form = el('form', 'form-grid common-answers-form');
-      commonAnswerSchema.forEach((field) => {
-        const label = el('label', 'full', field.label);
-        let input;
-        if (field.type === 'choice') {
-          input = el('select');
-          [
-            ['', 'Unknown / not provided'],
-            ['Yes', 'Yes'],
-            ['No', 'No'],
-          ].forEach(([value, caption]) => {
-            const option = el('option', '', caption);
-            option.value = value;
-            input.append(option);
-          });
-          input.value = ['Yes', 'No'].includes(state.answers?.[field.key])
-            ? state.answers[field.key]
-            : '';
-        } else {
-          input = el('input');
-          input.type = 'text';
-          input.value =
-            typeof state.answers?.[field.key] === 'string' ? state.answers[field.key] : '';
-          input.placeholder = 'Leave blank if unknown';
-        }
-        input.name = field.key;
-        label.append(input, el('span', 'answer-field-help', field.help));
-        form.append(label);
-      });
-      const footer = el('div', 'form-footer full');
-      footer.append(
-        el(
-          'p',
-          'form-note',
-          'Other saved answers are preserved. Required questions without an explicit answer continue to need review.',
-        ),
-      );
-      const submit = button('Save common answers', 'primary', 'save');
-      submit.type = 'submit';
-      footer.append(submit);
-      form.append(footer);
-      content.append(form);
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const answers = { ...(state.answers || {}) };
-        commonAnswerSchema.forEach((field) => {
-          const value = form.elements.namedItem(field.key).value.trim();
-          if (value) answers[field.key] = value;
-          else delete answers[field.key];
-        });
-        await submitModal(
-          form,
-          '/api/answers',
-          { answers },
-          'Common application answers saved. Remaining unknown questions still require review.',
-        );
-      });
-      return;
-    }
-    content.append(
-      el(
-        'p',
-        'modal-note',
-        'Use a JSON object mapping the exact question text to your confirmed answer. Omit unknown answers. Save only answers you personally confirm; sensitive or eligibility answers are never guessed.',
-      ),
-    );
-    const form = el('form', 'form-grid');
-    const json = formField(
-      form,
-      'Saved answers JSON',
-      'answers',
-      'textarea',
-      JSON.stringify(state.answers || {}, null, 2),
-      true,
-    );
-    json.className = 'json-editor';
-    json.spellcheck = false;
-    const footer = el('div', 'form-footer full');
-    footer.append(
-      el(
-        'p',
-        'form-note',
-        'Copy the exact question from the application review message. Values can be text, true/false, or a number. Required unanswered questions remain in review.',
-      ),
-    );
-    const submit = button('Save answers', 'primary', 'save');
-    submit.type = 'submit';
-    footer.append(submit);
-    form.append(footer);
-    content.append(form);
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      try {
-        const answers = JSON.parse(json.value);
-        if (!answers || typeof answers !== 'object' || Array.isArray(answers))
-          throw new Error('Answers JSON must be an object.');
-        if (
-          Object.values(answers).some(
-            (value) => !['string', 'boolean', 'number'].includes(typeof value),
-          )
-        )
-          throw new Error(
-            'Answer values must be text, true/false, or a number. Omit questions you have not answered.',
-          );
-        await submitModal(form, '/api/answers', { answers }, 'Application answers saved.');
-      } catch (error) {
-        dialogError(new Error(`Could not save the answers: ${error.message}`));
-      }
-    });
-  }
-  async function openBrowserTab(platform, url, node) {
-    if (node) node.disabled = true;
-    try {
-      const result = await api('/api/browser-tab', { platform, ...(url ? { url } : {}) });
-      const opened = result.status === 'opened';
-      toast(
-        resultMessage(
-          result,
-          opened
-            ? 'Opened in your regular browser using its saved sessions.'
-            : 'The browser tab could not be opened.',
-        ),
-        !opened,
-      );
-      if (opened && $('modal').open) closeModal();
-    } catch (error) {
-      if ($('modal').open) dialogError(error);
-      else toast(error.message, true);
-    } finally {
-      if (node) node.disabled = false;
-    }
-  }
-  async function openLogin(platform, url, node) {
-    if (node) node.disabled = true;
-    try {
-      const result = await api('/api/login', {
-        mode: 'isolated',
-        platform,
-        ...(url ? { url } : {}),
-      });
-      loginResults[platform] = resultMessage(
-        result,
-        'Separate worker browser requested. Complete sign-in there; worker session status is not verified.',
-      );
-      renderConnections();
-      toast(loginResults[platform]);
-      if ($('modal').open) closeModal();
-    } catch (error) {
-      if ($('modal').open) dialogError(error);
-      else toast(error.message, true);
-      loginResults[platform] = `Could not open login: ${error.message}`;
-      renderConnections();
-    } finally {
-      if (node) node.disabled = false;
-    }
-  }
-  function showEmployerLogin(workerSession = false) {
-    const content = openModal(
-      workerSession ? 'Connect an employer worker session' : 'Open an employer tab',
-      workerSession ? 'SEPARATE WORKER BROWSER' : 'YOUR REGULAR BROWSER',
-    );
-    content.append(
-      el(
-        'p',
-        'modal-note',
-        workerSession
-          ? 'This opens JobPilot’s separate browser to sign in the automated worker. Your regular browser’s saved sessions are not shared with it.'
-          : 'Enter the employer’s application or sign-in URL. It opens in your regular browser with its saved sessions. Opening this tab does not connect the automated worker.',
-      ),
-    );
-    const form = el('form', 'form-grid'),
-      url = formField(
-        form,
-        'Employer portal URL',
-        'url',
-        'url',
-        '',
-        true,
-        'https://careers.example.com',
-      );
-    url.required = true;
-    const footer = el('div', 'form-footer full'),
-      submit = button(
-        workerSession ? 'Connect worker session' : 'Open browser tab',
-        'primary',
-        'external',
-      );
-    submit.type = 'submit';
-    footer.append(submit);
-    form.append(footer);
-    content.append(form);
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      await (workerSession ? openLogin : openBrowserTab)('employer', url.value.trim(), submit);
-    });
-  }
   hydrateIcons();
   $('todayLabel').textContent = new Intl.DateTimeFormat(undefined, {
     weekday: 'short',
@@ -1950,41 +1364,24 @@
     year: 'numeric',
   }).format(new Date());
   $('closeModal').addEventListener('click', closeModal);
-  $('modal').addEventListener('click', (event) => {
-    if (event.target === $('modal')) {
-      const rect = $('modal').getBoundingClientRect();
-      if (
-        event.clientX < rect.left ||
-        event.clientX > rect.right ||
-        event.clientY < rect.top ||
-        event.clientY > rect.bottom
-      )
-        closeModal();
-    }
-  });
   $('modal').addEventListener('close', () => {
     selectedJob = null;
+    detailSignature = '';
   });
   document
     .querySelectorAll('[data-view]')
     .forEach((node) => node.addEventListener('click', () => showView(node.dataset.view)));
-  document.querySelectorAll('[data-filter]').forEach((node) =>
-    node.addEventListener('click', () => {
-      activeFilter = node.dataset.filter;
-      updateTabs();
-      renderJobs();
-    }),
-  );
   document
     .querySelectorAll('[data-open-import]')
-    .forEach((node) => node.addEventListener('click', () => showImport()));
+    .forEach((node) => node.addEventListener('click', () => showImport('email')));
   $('openImport').addEventListener('click', () => showImport());
   $('cleanupJobs').addEventListener('click', showCleanupPreview);
-  ['jobQuery', 'sourceFilter', 'statusFilter'].forEach((id) =>
+  ['jobQuery', 'sourceFilter'].forEach((id) =>
     $(id).addEventListener(id === 'jobQuery' ? 'input' : 'change', renderJobs),
   );
+  $('appliedQuery').addEventListener('input', renderApplied);
   $('searchNow').addEventListener('click', () =>
-    action($('searchNow'), '/api/control', { action: 'search' }, 'Discovery search requested.'),
+    action($('searchNow'), '/api/control', { action: 'search' }, 'Search requested.'),
   );
   $('toggleSearch').addEventListener('click', () =>
     action(
@@ -1994,56 +1391,22 @@
       state.settings.search_enabled ? 'Automatic search paused.' : 'Automatic search resumed.',
     ),
   );
-  $('toggleSubmissions').addEventListener('click', () =>
-    action(
-      $('toggleSubmissions'),
-      '/api/control',
-      { submission_enabled: !state.settings.submission_enabled },
-      state.settings.submission_enabled
-        ? 'Application submissions paused.'
-        : 'Eligible application submissions resumed.',
-    ),
-  );
-  $('toggleWorker').addEventListener('click', () => {
-    const running = state.settings.search_enabled || state.settings.submission_enabled;
-    action(
-      $('toggleWorker'),
-      '/api/control',
-      { action: running ? 'stop' : 'start' },
-      running
-        ? 'Worker stop requested. In-progress work checkpoints safely.'
-        : 'Worker start requested.',
-    );
-  });
   $('editProfile').addEventListener('click', showProfileEditor);
-  $('editAnswers').addEventListener('click', showAnswersEditor);
-  document
-    .querySelectorAll('[data-browser-tab]')
-    .forEach((node) =>
-      node.addEventListener('click', () => openBrowserTab(node.dataset.browserTab, null, node)),
-    );
-  document
-    .querySelectorAll('[data-login]')
-    .forEach((node) =>
-      node.addEventListener('click', () => openLogin(node.dataset.login, null, node)),
-    );
-  $('employerLogin').addEventListener('click', () => showEmployerLogin());
-  $('employerWorkerLogin').addEventListener('click', () => showEmployerLogin(true));
   $('settingsForm').addEventListener('input', () => {
     settingsDirty = true;
   });
   $('settingsForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget,
-      fields = form.elements;
-    const payload = {};
+      fields = form.elements,
+      payload = {};
     ['location', 'ollama_url', 'model'].forEach((key) => {
       payload[key] = fields.namedItem(key).value.trim();
     });
     ['search_interval_minutes', 'min_fit'].forEach((key) => {
       payload[key] = Number(fields.namedItem(key).value);
     });
-    ['remote', 'search_enabled', 'submission_enabled', 'keep_awake', 'startup'].forEach((key) => {
+    ['remote', 'search_enabled', 'keep_awake', 'startup'].forEach((key) => {
       payload[key] = fields.namedItem(key).checked;
     });
     payload.target_roles = fields
@@ -2059,52 +1422,37 @@
       form.querySelector('[type=submit]'),
       '/api/settings',
       payload,
-      'Search preferences saved.',
+      'Preferences saved.',
     );
     if (result) {
       settingsDirty = false;
       renderSettings(true);
     }
   });
-  $('emailForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget,
-      fields = form.elements;
-    const payload = {
-      host: fields.namedItem('host').value.trim(),
-      port: Number(fields.namedItem('port').value),
-      user: fields.namedItem('user').value.trim(),
-      password: fields.namedItem('password').value,
-      folder: fields.namedItem('folder').value.trim(),
-      enabled: fields.namedItem('enabled').checked,
-    };
-    const result = await action(
-      form.querySelector('[type=submit]'),
-      '/api/email',
-      payload,
-      'Email settings saved. Connection verification will appear in worker activity.',
-    );
-    if (result) {
-      emailDirty = false;
-      fields.namedItem('password').value = '';
-      $('emailStatus').textContent = resultMessage(
-        result,
-        'Configuration saved. Inbox access has not been verified by this dashboard; check worker activity.',
-      );
-    }
-  });
   $('emailForm').addEventListener('input', () => {
     emailDirty = true;
+  });
+  $('emailForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    emailOperation('check');
+  });
+  $('syncEmail').addEventListener('click', () => emailOperation('sync'));
+  $('gmailHelp').addEventListener('click', async (event) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    try {
+      await api('/api/browser/open_external', { url: event.currentTarget.href });
+    } catch (error) {
+      toast(
+        friendlyMessage(error.message, 'Copy the Google app-password link into your browser.'),
+        true,
+      );
+    }
   });
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'overview'));
   window.addEventListener('focus', () => poll());
   showView(location.hash.slice(1) || 'overview');
   session().catch(() => {});
-  poll().then(() => {
-    if (state && new URLSearchParams(location.search).get('setup') === 'answers') {
-      showView('answers');
-      showAnswersEditor();
-    }
-  });
+  poll();
   setInterval(poll, 3000);
 })();

@@ -57,6 +57,7 @@ def test_uncertain_retry_requires_receipt_review(tmp_path, monkeypatch):
     client = api(tmp_path, monkeypatch)
     import jobpilot.service as service
 
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     job = service.store.add_job(
         {"url": "https://example.com/uncertain", "title": "Security", "company": "Example"}
     )
@@ -110,7 +111,9 @@ def test_job_mutations_cannot_change_active_adapter(tmp_path, monkeypatch):
     import jobpilot.service as service
     from jobpilot import browser
 
-    service.store.set("settings", {**service.settings(), "submission_enabled": True})
+    service.store.set(
+        "settings", {**service.settings(), "application_mode": "legacy", "submission_enabled": True}
+    )
     entered, release = threading.Event(), threading.Event()
 
     def adapter(job, profile, answers, documents, settings, checkpoint=None):
@@ -278,7 +281,9 @@ def test_pause_before_checkpoint_prevents_submission(tmp_path, monkeypatch):
     import jobpilot.service as service
     from jobpilot import browser
 
-    service.store.set("settings", {**service.settings(), "submission_enabled": True})
+    service.store.set(
+        "settings", {**service.settings(), "application_mode": "legacy", "submission_enabled": True}
+    )
     entered, release = threading.Event(), threading.Event()
     clicked = []
 

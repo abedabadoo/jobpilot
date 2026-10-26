@@ -48,13 +48,21 @@ The PyInstaller output contains the desktop launcher; installing also supplies t
 
 ## First use
 
-1. Replace the fictional profile with your contact details and verified career facts. Review all generated documents before relying on the saved profile.
-2. Set target roles and location. Save only screening answers you know; leave unknown answers unset.
-3. Enable search or import a real posting. Inspect its fit, documents and any review reason.
-4. Enable submissions when the profile and answers are ready. Search and submissions can be paused independently.
+1. Replace the fictional profile with your contact details and career history.
+2. Set target roles and location, then enable search or import a posting.
+3. Use **Review** to inspect fit, job-description keywords, and tailored document exports.
+4. Open the job in your usual browser and apply there. Click **Applied?** when finished; the role moves to Applied.
 
-Closing the desktop window hides it to the tray. **Quit dashboard** leaves the worker running. **Stop worker** pauses searches and submissions; it does not delete the queue. Windows sign-in startup is available after installation, through Preferences. The installed recovery task checks every five minutes and at sign-in, and starts services only when the saved startup setting is enabled.
+Closing the desktop window hides it to the tray. **Quit dashboard** leaves the worker running. **Stop worker** stops background work without deleting the queue. Windows sign-in startup is available after installation, through Preferences. The installed recovery task checks every five minutes and at sign-in, and starts services only when the saved startup setting is enabled. Automatic submission and remote access remain disabled in assistant mode, even when older saved preferences enabled them.
+
+## Email alerts
+
+Open **Email**, enter your Gmail address and a [Google app password](https://myaccount.google.com/apppasswords), and select **Connect & test**. Google app passwords require an eligible account with two-step verification; see [Google's instructions](https://support.google.com/accounts/answer/185833). Keep the default host `imap.gmail.com`, encrypted port `993`, and folder `INBOX` unless you intentionally use another IMAP account or folder.
+
+The credential is stored in Windows Credential Manager. A successful connection test confirms that the folder can be opened. Use **Sync now** to read recent messages and import recognized job links. The dashboard shows the last check, message counts, links found, and imported opportunities. If the scan limit is reached, increase it under Advanced or shorten the date window. Reading leaves messages unread; there are no send or delete operations.
+
+Saving an address alone does not authorize inbox access. JobPilot will report an unconnected account until the credential has been supplied and the connection verified. EML alert import is available without a persistent inbox connection.
 
 ## Updating and backup
 
-Pause activity and finish any open verification before maintenance. Back up the data directory while services are stopped, including the SQLite database and its associated files. Rebuild and rerun the installer using the same installation and data paths. Repair switches `-SkipModel`, `-SkipBrowser` and `-SkipDependencies` skip those steps only when the existing components are already usable. Do not overwrite or delete data to repair application code.
+Pause searches and wait for document preparation to finish before maintenance. Back up the data directory while services are stopped, including the SQLite database and its associated files. Rebuild and rerun the installer using the same installation and data paths. Repair switches `-SkipModel`, `-SkipBrowser` and `-SkipDependencies` skip those steps only when the existing components are already usable. Do not overwrite or delete data to repair application code.

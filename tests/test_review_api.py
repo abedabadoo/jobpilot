@@ -15,6 +15,7 @@ def review_api(tmp_path, monkeypatch):
     from jobpilot import browser
 
     service = importlib.reload(service)
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     monkeypatch.setattr(browser, "login_in_progress", lambda: False)
     client = TestClient(service.app)
     headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}

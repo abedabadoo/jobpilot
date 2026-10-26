@@ -14,6 +14,7 @@ def tab_api(tmp_path, monkeypatch):
     from jobpilot import browser
 
     service = importlib.reload(service)
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     opened = []
 
     def dispatch(url):

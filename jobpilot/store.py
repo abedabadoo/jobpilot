@@ -3,6 +3,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .core import BUCKET_LABELS, TZ, canonical_url, freshness, parse_date, rank_key
 
@@ -23,6 +24,7 @@ class Store:
                     PRIMARY KEY(kind, identity));
                 CREATE TABLE IF NOT EXISTS job_id_sequence (
                     id INTEGER PRIMARY KEY CHECK(id=1), highwater INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS problems (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL);
             """)
             c.execute("INSERT OR IGNORE INTO job_id_sequence(id,highwater) VALUES(1,0)")
             self._preserve_job_ids(c)
@@ -157,7 +159,7 @@ class Store:
             existing.get("documents")
             or existing.get("uncertain")
             or existing.get("status")
-            in ["confirmed", "manually_verified", "submitting", "applying", "preparing"]
+            in ["confirmed", "manually_verified", "applied", "submitting", "applying", "preparing"]
         ):
             connection.execute(
                 "UPDATE jobs SET payload=? WHERE id=?", (json.dumps(existing), job_id)
@@ -218,6 +220,124 @@ class Store:
             payload["updated_at"] = self.now()
             c.execute("UPDATE jobs SET payload=? WHERE id=?", (json.dumps(payload), job_id))
             return self.decorate(job_id, payload)
+
+    def mark_applied(self, job_id, applied):
+        with self.lock, self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            payload = json.loads(row[0])
+            if payload.get("status") in ["preparing", "applying", "submitting"] or (
+                payload.get("review_session") or {}
+            ).get("state") in ["opening", "opened"]:
+                raise ValueError("Wait for this job's active work to finish.")
+            if applied:
+                if payload.get("status") != "applied":
+                    payload["applied_prior_status"] = payload.get("status", "queued")
+                    payload["applied_prior_uncertain"] = payload.get("uncertain", False)
+                payload.update(
+                    applied=True,
+                    status="applied",
+                    uncertain=False,
+                    applied_at=payload.get("applied_at") or self.now(),
+                )
+                handoff = payload.get("browser_handoff") or {}
+                if handoff.get("mode") == "default_browser":
+                    payload["browser_handoff"] = {
+                        **handoff,
+                        "state": "closed",
+                        "outcome": "applied",
+                    }
+            else:
+                previous = payload.pop("applied_prior_status", payload.get("status"))
+                if previous not in ["queued", "prepared", "needs_review", "error", "skipped"]:
+                    previous = "prepared" if payload.get("documents") else "queued"
+                payload.update(
+                    applied=False,
+                    applied_at=None,
+                    status=previous,
+                    uncertain=payload.pop(
+                        "applied_prior_uncertain", payload.get("uncertain", False)
+                    ),
+                )
+                if payload.get("preparation_prior_status") == "applied":
+                    payload["preparation_prior_status"] = previous
+            payload["updated_at"] = self.now()
+            c.execute("UPDATE jobs SET payload=? WHERE id=?", (json.dumps(payload), job_id))
+            return self.decorate(job_id, payload)
+
+    def remove_job(self, job_id):
+        with self.lock, self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT canonical,payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            payload = json.loads(row[1])
+            if self._cleanup_protected(payload):
+                raise ValueError(
+                    "Finish this job's active work or browser handoff before removing it."
+                )
+            self._preserve_job_ids(c)
+            self._remember_removed(c, job_id, self._identity_keys(payload, row[0]))
+            c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        return {"deleted_count": 1, "deleted_ids": [job_id], "skipped_count": 0}
+
+    @staticmethod
+    def problem_url(value):
+        try:
+            parts = urlsplit(str(value or ""))
+            if (
+                parts.scheme not in ["http", "https"]
+                or not parts.hostname
+                or parts.username
+                or parts.password
+            ):
+                return ""
+            safe_keys = {"jk", "jobid", "job_id", "requisitionid", "gh_jid", "lang"}
+            query = urlencode(
+                [(key, value) for key, value in parse_qsl(parts.query) if key.lower() in safe_keys]
+            )
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+        except ValueError:
+            return ""
+
+    def add_problem(self, message, *, category="worker", job=None, url=None):
+        job = job or {}
+        payload = {
+            "message": str(message)[:600],
+            "title": str(job.get("title") or "")[:180],
+            "company": str(job.get("company") or "")[:180],
+            "url": self.problem_url(url or job.get("url") or job.get("apply_url")),
+            "created_at": self.now(),
+            "resolved": False,
+            "category": category,
+        }
+        with self.lock, self.connect() as c:
+            for problem_id, raw in c.execute("SELECT id,payload FROM problems ORDER BY id DESC"):
+                previous = json.loads(raw)
+                if not previous.get("resolved") and all(
+                    previous.get(key) == payload[key]
+                    for key in ["message", "title", "company", "url", "category"]
+                ):
+                    return {**previous, "id": problem_id}
+            result = c.execute("INSERT INTO problems(payload) VALUES(?)", (json.dumps(payload),))
+            return {**payload, "id": result.lastrowid}
+
+    def problems(self):
+        with self.lock, self.connect() as c:
+            rows = c.execute("SELECT id,payload FROM problems ORDER BY id DESC").fetchall()
+        return [{**json.loads(raw), "id": problem_id} for problem_id, raw in rows]
+
+    def resolve_problem(self, problem_id):
+        with self.lock, self.connect() as c:
+            row = c.execute("SELECT payload FROM problems WHERE id=?", (problem_id,)).fetchone()
+            if not row:
+                raise KeyError(problem_id)
+            payload = json.loads(row[0])
+            payload.update(resolved=True, resolved_at=self.now())
+            c.execute("UPDATE problems SET payload=? WHERE id=?", (json.dumps(payload), problem_id))
+            return {**payload, "id": problem_id}
 
     @staticmethod
     def _cleanup_cutoff(cutoff):
@@ -332,9 +452,11 @@ class Store:
                 )
             elif job["status"] == "preparing":
                 review = job.get("preparation_prior_status") == "needs_review"
+                applied = job.get("applied") or job.get("preparation_prior_status") == "applied"
                 self.update_job(
                     job["id"],
-                    status="needs_review" if review else "queued",
+                    status="applied" if applied else ("needs_review" if review else "queued"),
+                    preparation_requested=True,
                     note=(
                         job.get("preparation_prior_note", "")
                         + " Preparation interrupted; review retained."
@@ -353,6 +475,7 @@ class Store:
         jobs = self.jobs()
         today = datetime.now(timezone.utc).astimezone(TZ).date()
         confirmed = [j for j in jobs if j["status"] == "confirmed"]
+        applied = [j for j in jobs if j.get("applied") or j["status"] == "applied"]
         errors = [j for j in jobs if j["status"] == "error"]
 
         def local_today(value):
@@ -362,9 +485,11 @@ class Store:
         total = len(confirmed) + len(errors)
         return {
             "confirmed": len(confirmed),
+            "applied": len(applied),
             "errors": len(errors),
             "success_rate": round(len(confirmed) / total * 100, 1) if total else None,
-            "applied_today": sum(local_today(j.get("confirmed_at")) for j in confirmed),
+            "applied_today": sum(local_today(j.get("applied_at")) for j in applied)
+            + sum(local_today(j.get("confirmed_at")) for j in confirmed if not j.get("applied")),
             "queued": sum(j["status"] in ["queued", "preparing", "prepared"] for j in jobs),
             "review": sum(j["status"] == "needs_review" for j in jobs),
             "manually_verified": sum(j["status"] == "manually_verified" for j in jobs),

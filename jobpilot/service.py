@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from . import __version__
 from .assets import asset_directory
 from .core import eligibility, facts_map, role_assessment, score_job
 from .documents import local_endpoint, prepare
@@ -52,6 +53,7 @@ DEFAULTS = {
     "min_fit": 40,
     "search_enabled": False,
     "submission_enabled": False,
+    "application_mode": "assist",
     "keep_awake": False,
     "startup": False,
     "remote_intervention_enabled": False,
@@ -69,6 +71,12 @@ DEFAULTS = {
 for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]:
     if store.get(key) is None:
         store.set(key, default)
+stored_preferences = store.get("settings", {})
+if stored_preferences.get("application_mode") != "legacy":
+    stored_preferences.update(
+        application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
+    )
+    store.set("settings", stored_preferences)
 if os.environ.get("JOBPILOT_DESKTOP_EXE"):
     store.set("desktop_exe", os.environ["JOBPILOT_DESKTOP_EXE"])
 TOKEN = store.get("_session_token") or secrets.token_urlsafe(32)
@@ -79,6 +87,8 @@ search_requested = threading.Event()
 application_lock = threading.RLock()
 cleanup_previews = {}
 cleanup_preview_lock = threading.RLock()
+email_sync_lock = threading.RLock()
+email_task_running = threading.Event()
 server_instance = None
 worker = {
     "searching": False,
@@ -93,12 +103,48 @@ worker = {
 
 
 def settings():
-    return {**DEFAULTS, **store.get("settings", {}), "data_dir": str(DATA)}
+    conf = {**DEFAULTS, **store.get("settings", {}), "data_dir": str(DATA)}
+    if conf.get("application_mode") != "legacy":
+        conf.update(
+            application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
+        )
+    return conf
 
 
-def report_error(message):
-    worker["last_error"] = str(message)[:1000]
-    store.event(message, "error")
+def report_error(message, *, category="worker", job=None, detail=None, url=None):
+    technical = str(message if detail is None else detail)
+    friendly = (
+        str(message)
+        if detail is not None
+        else {
+            "search": "The job search could not finish. Try again later.",
+            "documents": "Documents could not be prepared for this job. Check the profile and try again.",
+            "fetch": "The job listing could not be read. Open the posting and try importing it again.",
+        }.get(category, "JobPilot could not finish this operation. Try again.")
+    )
+    logs = DATA / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    with (logs / "problems.log").open("a", encoding="utf-8") as output:
+        output.write(
+            json.dumps(
+                {
+                    "at": store.now(),
+                    "category": category,
+                    "job_id": (job or {}).get("id"),
+                    "detail": technical,
+                }
+            )
+            + "\n"
+        )
+    worker["last_error"] = friendly
+    store.event(friendly, "error")
+    return store.add_problem(friendly, category=category, job=job, url=url)
+
+
+def job_keywords(job):
+    from .keywords import extract_keywords
+
+    return extract_keywords(job, store.get("profile"))
 
 
 def classify_job(job, profile, conf):
@@ -118,6 +164,9 @@ def classify_job(job, profile, conf):
         "salary_max",
         "description_missing",
         "needs_description_review",
+        "alert_subject",
+        "alert_received_at",
+        "alert_from",
     }
     job = {k: v for k, v in job.items() if k in fields}
     job["status"] = "queued"
@@ -175,8 +224,11 @@ def discover_once():
     conf["search_titles"] = conf["target_roles"]
     conf["locations"] = [conf["location"]]
     profile = store.get("profile")
+    email_revision = store.get("_email_config_revision", 0)
+    email_imported = 0
     try:
-        before = len(store.jobs())
+        existing_ids = {job["id"] for job in store.jobs()}
+        before = len(existing_ids)
         jobs = collectors.discover(conf, profile)
         for job in jobs:
             if not job.get("url") or not job.get("title"):
@@ -184,20 +236,44 @@ def discover_once():
             job = classify_job(job, profile, conf)
             if job.get("status") == "skipped":
                 continue
-            store.add_job(job)
+            saved = store.add_job(job)
+            if saved is not None and saved["id"] not in existing_ids:
+                if job.get("source") == "email":
+                    email_imported += 1
+                existing_ids.add(saved["id"])
         worker["last_search"] = store.now()
         store.set("last_search", worker["last_search"])
         store.event(
             f"Search finished: {len(store.jobs()) - before} new matching opportunities; {len(jobs)} source records checked."
         )
         for error in getattr(collectors, "get_last_errors", lambda: [])():
+            source = error.get("source", "") if isinstance(error, dict) else ""
+            source_name = {
+                "linkedin": "LinkedIn",
+                "indeed": "Indeed",
+                "gmail": "Gmail",
+                "email": "Gmail",
+                "greenhouse": "Greenhouse",
+                "lever": "Lever",
+                "ashby": "Ashby",
+            }.get(str(source).lower(), "A job source")
             report_error(
-                f"{error.get('source', 'Source').title()}: {error.get('note', '')}"
-                if isinstance(error, dict)
-                else str(error)
+                f"{source_name} could not finish its search. Try again later.",
+                category="search",
+                detail=error,
             )
+        if conf.get("email", {}).get("enabled"):
+            summary = getattr(collectors, "get_last_email_result", lambda: None)()
+            if summary and not email_task_running.is_set():
+                _save_email_result(
+                    summary, imported=email_imported, expected_revision=email_revision
+                )
     except Exception as exc:
-        report_error(f"Discovery failed: {type(exc).__name__}: {exc}")
+        report_error(
+            "The job search could not finish. Try again later.",
+            category="search",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
     finally:
         worker["searching"] = False
 
@@ -216,35 +292,50 @@ def discovery_loop():
 
 def prepare_job(job_id, preserve_review=False):
     with application_lock:
-        job = store.get_job(job_id)
-        if (
-            not job
-            or job.get("uncertain")
-            or _manual_handoff_active(job)
-            or job["status"]
-            in ["confirmed", "manually_verified", "applying", "submitting", "skipped"]
-        ):
+        if stop_event.is_set():
             return
-        preserve_review = preserve_review or job["status"] == "needs_review"
-        review_note = (
-            (job.get("preparation_prior_note") or job.get("note", "")) if preserve_review else ""
-        )
-        worker["current"] = job["title"]
-        store.update_job(
-            job_id,
-            status="preparing",
-            preparation_prior_status="needs_review" if preserve_review else "queued",
-            preparation_prior_note=review_note,
-            note="Selecting verified career facts and creating application documents.",
-        )
+        with store.lock:
+            job = store.get_job(job_id)
+            assist_mode = settings()["application_mode"] == "assist"
+            if (
+                not job
+                or (job.get("uncertain") and not assist_mode)
+                or _manual_handoff_active(job)
+                or (job.get("review_session") or {}).get("state") in ["opening", "opened"]
+                or (assist_mode and job["status"] == "preparing")
+                or job["status"]
+                in ["confirmed", "manually_verified", "applying", "submitting", "skipped"]
+            ):
+                return
+            preserve_review = preserve_review or job["status"] == "needs_review"
+            prior_status = job.get("preparation_prior_status") or job["status"]
+            review_note = (
+                (job.get("preparation_prior_note") or job.get("note", ""))
+                if preserve_review
+                else ""
+            )
+            worker["current"] = job["title"]
+            store.update_job(
+                job_id,
+                status="preparing",
+                preparation_prior_status=prior_status,
+                preparation_prior_note=review_note,
+                preparation_requested=False,
+                note="Selecting verified career facts and creating application documents.",
+            )
         try:
             documents = prepare(job, store.get("profile"), DATA / "applications", settings())
-            final_status = "needs_review" if preserve_review else "prepared"
+            final_status = (
+                "applied"
+                if job.get("applied") or prior_status == "applied"
+                else ("needs_review" if preserve_review else "prepared")
+            )
             job = store.update_job(
                 job_id,
                 status=final_status,
                 documents=documents,
                 application={
+                    **(job.get("application") or {}),
                     "documents": documents,
                     "status": final_status,
                     "note": documents["generation_note"],
@@ -261,14 +352,21 @@ def prepare_job(job_id, preserve_review=False):
             store.update_job(
                 job_id,
                 status="error",
-                note=f"Document preparation failed: {type(exc).__name__}: {exc}",
+                note="Documents could not be prepared. See Problems for this job.",
             )
-            report_error(f"Document preparation failed for job {job_id}: {exc}")
+            report_error(
+                "Documents could not be prepared for this job. Check the profile and try again.",
+                category="documents",
+                job=job,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
         finally:
             worker["current"] = None
 
 
 def apply_job(job_id):
+    if settings()["application_mode"] == "assist":
+        return
     from . import browser
 
     with application_lock:
@@ -444,9 +542,54 @@ def apply_job(job_id):
             worker["current"] = None
 
 
+def process_document_queue():
+    if stop_event.is_set():
+        return None
+    assist_mode = settings()["application_mode"] == "assist"
+    job = next(
+        (
+            row
+            for row in store.jobs()
+            if row.get("preparation_requested")
+            and (assist_mode or not row.get("uncertain"))
+            and not _manual_handoff_active(row)
+            and (row.get("review_session") or {}).get("state") not in ["opening", "opened"]
+            and row["status"]
+            not in [
+                "preparing",
+                "applying",
+                "submitting",
+                "confirmed",
+                "manually_verified",
+                "skipped",
+            ]
+        ),
+        None,
+    )
+    if job is None:
+        job = next(
+            (
+                row
+                for row in store.jobs()
+                if row["status"] == "queued"
+                and not row.get("documents")
+                and not row.get("uncertain")
+                and not row.get("applied")
+                and not _manual_handoff_active(row)
+                and (row.get("review_session") or {}).get("state") not in ["opening", "opened"]
+            ),
+            None,
+        )
+    if job:
+        return prepare_job(job["id"])
+    return None
+
+
 def application_loop():
     while not stop_event.wait(2):
-        if settings()["submission_enabled"]:
+        if settings()["application_mode"] == "assist":
+            process_document_queue()
+        elif settings()["submission_enabled"]:
             job = next(
                 (
                     j
@@ -510,6 +653,34 @@ def health_loop():
 @asynccontextmanager
 async def lifespan(app):
     store.recover()
+    if settings()["application_mode"] == "assist":
+        for job in store.jobs():
+            handoff = job.get("browser_handoff") or {}
+            if handoff.get("mode") == "default_browser" and handoff.get("state") != "closed":
+                store.update_job(
+                    job["id"],
+                    browser_handoff={
+                        **handoff,
+                        "state": "closed",
+                        "previous_state": handoff.get("state"),
+                        "closed_at": store.now(),
+                        "closed_reason": "assist_workflow",
+                    },
+                )
+    with email_sync_lock:
+        previous_email = store.get("email_sync", {})
+        if (
+            previous_email.get("state") in ["checking", "syncing"]
+            and not email_task_running.is_set()
+        ):
+            store.set(
+                "email_sync",
+                {
+                    **previous_email,
+                    "state": "error",
+                    "message": "The previous Gmail check was interrupted. Use Connect & test or Sync now to try again.",
+                },
+            )
     stop_event.clear()
     if os.environ.get("JOBPILOT_TESTING") != "1":
         store.event("JobPilot service started. Durable queue restored.")
@@ -552,7 +723,7 @@ async def local_security(request: Request, call_next):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "1.0.0", "pid": os.getpid(), "data_dir": str(DATA)}
+    return {"ok": True, "version": __version__, "pid": os.getpid(), "data_dir": str(DATA)}
 
 
 @app.get("/api/session")
@@ -562,20 +733,25 @@ def session():
 
 @app.get("/api/state")
 def state():
+    jobs = [{**job, "keywords": job_keywords(job)} for job in store.jobs()]
     return {
         "metrics": store.metrics(),
         "worker": dict(worker),
-        "jobs": store.jobs(),
+        "jobs": jobs,
         "events": store.events(),
         "settings": {k: v for k, v in settings().items() if k != "data_dir"},
         "profile": store.get("profile"),
         "answers": store.get("answers", {}),
         "remote_access": remote_runtime.status(),
+        "problems": store.problems(),
+        "email_sync": email_status(),
     }
 
 
 @app.post("/api/remote/setup")
 def remote_setup(body: dict | None = None):
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(409, "Remote application control is inactive in assist mode.")
     import base64
 
     link = remote_runtime.pairing_link()
@@ -600,6 +776,8 @@ def remote_control(body: dict):
     action = body.get("action")
     if action not in ["enable", "disable", "revoke_devices"]:
         raise HTTPException(400, "Choose enable, disable or revoke_devices.")
+    if action == "enable" and settings()["application_mode"] == "assist":
+        raise HTTPException(409, "Remote application control is inactive in assist mode.")
     if action == "revoke_devices":
         if remote_runtime.auth:
             remote_runtime.auth.revoke_all()
@@ -645,6 +823,7 @@ def control(body: dict):
             conf.update(search_enabled=False, submission_enabled=False)
             store.set("settings", conf)
             store.event("Service gracefully stopped for maintenance; queue retained.")
+            stop_event.set()
             if server_instance:
 
                 def finish():
@@ -664,6 +843,10 @@ def control(body: dict):
     for key in ["search_enabled", "submission_enabled"]:
         if key in body:
             conf[key] = bool(body[key])
+    if settings()["application_mode"] == "assist":
+        conf.update(
+            application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
+        )
     store.set("settings", conf)
     store.event(
         "Worker controls updated: searching "
@@ -678,9 +861,10 @@ def control(body: dict):
 @app.post("/api/settings")
 def save_settings(body: dict):
     conf = settings()
-    allowed = (set(DEFAULTS) - {"remote_intervention_enabled", "intervention_timeout_seconds"}) | {
-        "excluded_companies"
-    }
+    allowed = (
+        set(DEFAULTS)
+        - {"remote_intervention_enabled", "intervention_timeout_seconds", "application_mode"}
+    ) | {"excluded_companies"}
     update = {k: v for k, v in body.items() if k in allowed}
     for key, low, high in [
         ("search_interval_minutes", 5, 1440),
@@ -708,6 +892,8 @@ def save_settings(body: dict):
             raise HTTPException(400, f"{key} must be true or false.")
     old_startup = conf.get("startup")
     conf.update(update)
+    if conf.get("application_mode") == "assist":
+        conf.update(submission_enabled=False, remote_intervention_enabled=False)
     conf.pop("data_dir", None)
     if conf.get("startup") != old_startup:
         desktop_exe = store.get("desktop_exe")
@@ -891,7 +1077,17 @@ def import_job(body: dict):
             else:
                 jobs = [collectors.fetch_job(body["url"])]
         except Exception as exc:
-            raise HTTPException(400, f"Job import failed: {exc}")
+            message = (
+                "The job listing could not be read. Open the posting and try importing it again."
+            )
+            report_error(
+                message,
+                category="fetch",
+                detail=f"{type(exc).__name__}: {exc}",
+                url=body.get("url"),
+                job={"title": body.get("title"), "company": body.get("company")},
+            )
+            raise HTTPException(400, message)
     result = []
     ignored = 0
     for job in jobs:
@@ -925,6 +1121,75 @@ def guard_job_mutation(function):
             application_lock.release()
 
     return guarded
+
+
+@app.get("/api/problems")
+def problems():
+    return {"problems": store.problems()}
+
+
+@app.post("/api/problems/{problem_id}/resolve")
+def resolve_problem(problem_id: int):
+    try:
+        return {"ok": True, "problem": store.resolve_problem(problem_id)}
+    except KeyError:
+        raise HTTPException(404, "Problem not found.")
+
+
+@app.get("/api/jobs/{job_id}/keywords")
+def keywords_action(job_id: int):
+    return job_keywords(require_job(job_id))
+
+
+@app.post("/api/jobs/{job_id}/applied")
+def applied_action(job_id: int, body: dict):
+    if type(body.get("applied")) is not bool:
+        raise HTTPException(400, "Choose applied true or false.")
+    try:
+        job = store.mark_applied(job_id, body["applied"])
+    except KeyError:
+        raise HTTPException(404, "Job not found.")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/jobs/{job_id}/remove")
+def remove_action(job_id: int, body: dict | None = None):
+    try:
+        return {"ok": True, **store.remove_job(job_id)}
+    except KeyError:
+        raise HTTPException(404, "Job not found.")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.post("/api/browser/open_external")
+def open_external(body: dict):
+    from .links import open_external_url
+
+    url = body.get("url")
+    job = None
+    if body.get("job_id") is not None:
+        job = require_job(body["job_id"])
+        url = url or job.get("apply_url") or job.get("url") or job.get("source_url")
+    try:
+        result = open_external_url(url)
+    except (ValueError, OSError) as exc:
+        message = (
+            "The job page could not be opened. Copy its posting link and open it in your browser."
+        )
+        report_error(
+            message,
+            category="links",
+            job=job if body.get("job_id") is not None else None,
+            url=url,
+            detail=str(exc),
+        )
+        raise HTTPException(400, message)
+    if result.get("status") != "opened":
+        raise HTTPException(400, result.get("note") or "The job link could not be opened.")
+    return result
 
 
 def _cleanup_now():
@@ -1110,26 +1375,41 @@ def job_browser_tab(job_id: int, body: dict):
 
 
 @app.post("/api/jobs/{job_id}/prepare")
-@guard_job_mutation
 def prepare_action(job_id: int):
-    job = require_job(job_id)
-    if (
-        job.get("uncertain")
-        or _manual_handoff_active(job)
-        or job["status"]
-        in ["confirmed", "manually_verified", "applying", "submitting", "preparing", "skipped"]
-    ):
-        raise HTTPException(409, "This application is already complete, skipped, or busy.")
-    store.update_job(
-        job_id,
-        status="preparing",
-        preparation_prior_status=job["status"],
-        preparation_prior_note=job.get("note", ""),
-    )
-    threading.Thread(
-        target=prepare_job, args=(job_id, job["status"] == "needs_review"), daemon=True
-    ).start()
-    return {"ok": True}
+    with store.lock:
+        job = require_job(job_id)
+        assist_mode = settings()["application_mode"] == "assist"
+        if (
+            (job.get("uncertain") and not assist_mode)
+            or _manual_handoff_active(job)
+            or (job.get("review_session") or {}).get("state") in ["opening", "opened"]
+            or job["status"]
+            in ["confirmed", "manually_verified", "applying", "submitting", "preparing", "skipped"]
+        ):
+            raise HTTPException(409, "This application is already complete, skipped, or busy.")
+        if assist_mode:
+            queued = store.update_job(
+                job_id,
+                preparation_requested=True,
+                preparation_prior_status=job["status"],
+                preparation_prior_note=job.get("note", ""),
+            )
+            return {"ok": True, "queued": True, "job": queued}
+    if not application_lock.acquire(blocking=False):
+        raise HTTPException(409, "Wait for the active application before preparing documents.")
+    try:
+        store.update_job(
+            job_id,
+            status="preparing",
+            preparation_prior_status=job["status"],
+            preparation_prior_note=job.get("note", ""),
+        )
+        threading.Thread(
+            target=prepare_job, args=(job_id, job["status"] == "needs_review"), daemon=True
+        ).start()
+        return {"ok": True}
+    finally:
+        application_lock.release()
 
 
 @app.post("/api/jobs/{job_id}/retry")
@@ -1412,6 +1692,15 @@ def login(body: dict):
 
 @app.post("/api/email")
 def email_config(body: dict):
+    with email_sync_lock:
+        if email_task_running.is_set():
+            raise HTTPException(
+                409, "Wait for the inbox check to finish before changing the account."
+            )
+        return _save_email_configuration(body)
+
+
+def _save_email_configuration(body: dict):
     from . import collectors
 
     try:
@@ -1424,7 +1713,182 @@ def email_config(body: dict):
     conf = store.get("settings", {})
     conf["email"] = safe
     store.set("settings", conf)
+    store.set("_email_config_revision", store.get("_email_config_revision", 0) + 1)
+    store.set(
+        "email_sync",
+        {
+            "state": "not_connected",
+            "message": "Gmail settings saved. Test the connection to continue.",
+        },
+    )
     return {"ok": True}
+
+
+@app.get("/api/email/status")
+def email_status():
+    config = settings().get("email", {})
+    defaults = {
+        "state": "not_connected",
+        "message": "Connect Gmail in Email settings to import job alerts.",
+        "checked_at": None,
+        "messages_available": 0,
+        "messages_checked": 0,
+        "messages_skipped": 0,
+        "links_found": 0,
+        "imported": 0,
+        "truncated": False,
+    }
+    return {
+        **defaults,
+        **store.get("email_sync", {}),
+        "credential_saved": bool(config.get("credential_saved")),
+        "enabled": bool(config.get("enabled")),
+    }
+
+
+def _save_email_result(result, imported=0, complete_task=False, expected_revision=None):
+    fields = [
+        "checked_at",
+        "messages_available",
+        "messages_checked",
+        "messages_skipped",
+        "links_found",
+        "truncated",
+    ]
+    summary = {key: result[key] for key in fields if key in result}
+    result_state = result.get("state", "connected")
+    summary.update(
+        state=result_state,
+        message=result.get("message")
+        or (
+            "Gmail connection verified."
+            if result_state == "connected"
+            else "Gmail could not finish this check. Reconnect the inbox and try again."
+        ),
+        imported=imported,
+    )
+    with email_sync_lock:
+        if expected_revision is not None and expected_revision != store.get(
+            "_email_config_revision", 0
+        ):
+            return email_status()
+        if email_task_running.is_set() and not complete_task:
+            return email_status()
+        store.set("email_sync", summary)
+        worker["email_status"] = summary["message"]
+        if complete_task:
+            email_task_running.clear()
+    return summary
+
+
+def _email_work(mode, config):
+    from . import collectors
+
+    completed = False
+    try:
+        result = (
+            collectors.check_email_connection(config)
+            if mode == "checking"
+            else collectors.sync_email(config)
+        )
+        imported = 0
+        existing = {job["id"] for job in store.jobs()}
+        fetches, fetch_deadline = 0, time.monotonic() + 45
+        for alert in result.get("jobs", []) if mode == "syncing" else []:
+            job = dict(alert)
+            if (
+                (len(str(job.get("description", ""))) < 80 or not job.get("company"))
+                and fetches < 3
+                and time.monotonic() < fetch_deadline
+            ):
+                fetches += 1
+                try:
+                    details = collectors.fetch_job(job.get("url", ""))
+                    job.update(
+                        {
+                            key: value
+                            for key, value in details.items()
+                            if value not in [None, "", []]
+                        }
+                    )
+                    for key in ["alert_subject", "alert_received_at", "alert_from"]:
+                        if key in alert:
+                            job[key] = alert[key]
+                except Exception as exc:
+                    report_error(
+                        "The email alert was imported, but the full job posting could not be read. Open its link to check the details.",
+                        category="fetch",
+                        job=job,
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
+            try:
+                saved = store.add_job(classify_job(job, store.get("profile"), settings()))
+                if saved is not None and saved["id"] not in existing:
+                    imported += 1
+                    existing.add(saved["id"])
+            except Exception as exc:
+                report_error(
+                    "A job alert could not be imported. Open the posting and import its link again.",
+                    category="email",
+                    job=job,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+        with email_sync_lock:
+            _save_email_result(result, imported, complete_task=True)
+            completed = True
+    except Exception as exc:
+        message = (
+            str(exc)
+            if isinstance(exc, collectors.EmailConnectionError)
+            else "Gmail could not finish this check. Reconnect the inbox and try again."
+        )
+        report_error(message, category="email", detail=f"{type(exc).__name__}: {exc}")
+        with email_sync_lock:
+            store.set(
+                "email_sync",
+                {**email_status(), "state": "error", "message": message, "checked_at": store.now()},
+            )
+            worker["email_status"] = message
+            email_task_running.clear()
+            completed = True
+    finally:
+        if not completed:
+            with email_sync_lock:
+                email_task_running.clear()
+
+
+def _start_email(mode):
+    config = settings().get("email", {})
+    if not config.get("username"):
+        raise HTTPException(
+            400, "Save your Gmail address and a Google app password in Email settings first."
+        )
+    with email_sync_lock:
+        if email_task_running.is_set():
+            return JSONResponse({"ok": True, "state": email_status()["state"]}, status_code=202)
+        email_task_running.set()
+        store.set(
+            "email_sync",
+            {
+                **email_status(),
+                "state": mode,
+                "message": "Checking the Gmail connection."
+                if mode == "checking"
+                else "Reading job alerts from Gmail.",
+            },
+        )
+        threading.Thread(target=_email_work, args=(mode, dict(config)), daemon=True).start()
+    return JSONResponse({"ok": True, "state": mode}, status_code=202)
+
+
+@app.post("/api/email/check")
+def check_email(body: dict | None = None):
+    return _start_email("checking")
+
+
+@app.post("/api/email/sync")
+def sync_email(body: dict | None = None):
+    return _start_email("syncing")
 
 
 @app.get("/api/artifact")
@@ -1452,6 +1916,7 @@ def report():
         "status",
         "attempts",
         "confirmed_at",
+        "applied_at",
         "url",
         "note",
     ]

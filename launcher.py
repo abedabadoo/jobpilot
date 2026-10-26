@@ -255,6 +255,7 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
     from PIL import Image, ImageDraw
 
     state = {"quitting": False}
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
     window = webview.create_window(
         "JobPilot",
         SERVICE_URL,
@@ -296,7 +297,7 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
         pystray.Menu(
             pystray.MenuItem("Open JobPilot", open_window, default=True),
             pystray.MenuItem(
-                "Pause search and applications",
+                "Pause search",
                 action({"search_enabled": False, "submission_enabled": False}),
             ),
             pystray.MenuItem("Stop worker", action({"action": "stop"})),
