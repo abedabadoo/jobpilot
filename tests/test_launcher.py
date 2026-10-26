@@ -122,3 +122,24 @@ def test_only_one_desktop_instance_owns_launch_until_it_exits():
         assert third.owner is True
     finally:
         third.close()
+
+
+def test_dashboard_allows_document_downloads_before_creating_webview(tmp_path, monkeypatch):
+    import webview
+
+    launcher = launcher_module()
+    monkeypatch.setitem(webview.settings, "ALLOW_DOWNLOADS", False)
+    captured = {}
+
+    class WindowReady(Exception):
+        pass
+
+    def create_window(*args, **kwargs):
+        captured.update(webview.settings)
+        raise WindowReady
+
+    monkeypatch.setattr(webview, "create_window", create_window)
+    with pytest.raises(WindowReady):
+        launcher.show_dashboard(False, tmp_path, None)
+    assert captured["ALLOW_DOWNLOADS"] is True
+    assert captured["OPEN_EXTERNAL_LINKS_IN_BROWSER"] is True

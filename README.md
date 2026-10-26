@@ -29,6 +29,8 @@ JobPilot ranks saved experience and includes relevant job terms in the tailored 
 
 Document generation does not submit an application. Review and edit the exports before using them.
 
+In a role's **Review** window, **Open** launches the PDF or Word file in your usual document app. **Download** saves a separate copy. The desktop window supports a save dialog; browser downloads use the browser's normal download settings.
+
 ## Gmail and email alerts
 
 The Email workspace supports a read-only inbox connection, **Connect & test**, and **Sync now**, with the last check time, messages checked, job links found, and import counts. Credentials stay in Windows Credential Manager. Reading uses a read-only mailbox and `BODY.PEEK`, so messages are not marked read. A scan limit and date window keep each sync bounded; the interface reports when more messages exist than were checked.

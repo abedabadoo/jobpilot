@@ -1168,6 +1168,12 @@ option {
 .document-section .modal-note {
   color: #d5ede5;
 }
+.document-file {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
 .document-empty {
   font-size: 14px;
   color: #e0e9f5;

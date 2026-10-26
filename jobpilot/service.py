@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from functools import wraps
+from functools import lru_cache, wraps
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -141,10 +141,24 @@ def report_error(message, *, category="worker", job=None, detail=None, url=None)
     return store.add_problem(friendly, category=category, job=job, url=url)
 
 
-def job_keywords(job):
+@lru_cache(maxsize=512)
+def _cached_job_keywords(title, description, profile_json):
     from .keywords import extract_keywords
 
-    return extract_keywords(job, store.get("profile"))
+    return json.dumps(
+        extract_keywords({"title": title, "description": description}, json.loads(profile_json))
+    )
+
+
+def job_keywords(job, profile_json=None):
+    if profile_json is None:
+        profile_json = json.dumps(store.get("profile"), sort_keys=True, ensure_ascii=False)
+    # Cache immutable text so a caller cannot mutate a later response.
+    return json.loads(
+        _cached_job_keywords(
+            str(job.get("title") or ""), str(job.get("description") or ""), profile_json
+        )
+    )
 
 
 def classify_job(job, profile, conf):
@@ -733,14 +747,16 @@ def session():
 
 @app.get("/api/state")
 def state():
-    jobs = [{**job, "keywords": job_keywords(job)} for job in store.jobs()]
+    profile = store.get("profile")
+    profile_json = json.dumps(profile, sort_keys=True, ensure_ascii=False)
+    jobs = [{**job, "keywords": job_keywords(job, profile_json)} for job in store.jobs()]
     return {
         "metrics": store.metrics(),
         "worker": dict(worker),
         "jobs": jobs,
         "events": store.events(),
         "settings": {k: v for k, v in settings().items() if k != "data_dir"},
-        "profile": store.get("profile"),
+        "profile": profile,
         "answers": store.get("answers", {}),
         "remote_access": remote_runtime.status(),
         "problems": store.problems(),
@@ -1891,14 +1907,39 @@ def sync_email(body: dict | None = None):
     return _start_email("syncing")
 
 
-@app.get("/api/artifact")
-def artifact(path: str):
+def _artifact_target(path, *, document=False):
+    if not isinstance(path, str) or not path.strip() or "\x00" in path:
+        raise HTTPException(400, "Choose a generated document and try again.")
     target = Path(path).resolve()
     allowed = [DATA / "applications", DATA / "receipts", DATA / "evidence"]
     if not any(target.is_relative_to(x.resolve()) for x in allowed):
-        raise HTTPException(403, "Only application artifacts may be downloaded.")
+        raise HTTPException(403, "Only generated application files can be accessed.")
+    if document and target.suffix.lower() not in {".pdf", ".docx"}:
+        raise HTTPException(
+            400, "Open supports PDF and Word documents. Use Download for other files."
+        )
     if not target.is_file():
-        raise HTTPException(404, "Artifact not found.")
+        raise HTTPException(404, "This file is missing. Regenerate the documents and try again.")
+    return target
+
+
+@app.post("/api/artifact/open")
+def open_artifact(body: dict):
+    from .artifacts import open_document
+
+    target = _artifact_target(body.get("path"), document=True)
+    try:
+        open_document(target)
+    except OSError as exc:
+        raise HTTPException(
+            503, "Your document app could not open this file. Use Download to save it instead."
+        ) from exc
+    return {"ok": True, "opened": True, "name": target.name}
+
+
+@app.get("/api/artifact")
+def artifact(path: str):
+    target = _artifact_target(path)
     return FileResponse(target, filename=target.name)
 
 

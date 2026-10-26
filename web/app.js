@@ -126,6 +126,8 @@
     detailSignature = '';
   let problemItems = [],
     problemsAvailable = true;
+  const resolvedProblems = new Set(),
+    resolvingProblems = new Set();
 
   async function session() {
     const response = await fetch('/api/session', { cache: 'no-store' });
@@ -503,7 +505,9 @@
     );
   }
   function renderProblems() {
-    const open = problemItems.filter((problem) => !problem.resolved);
+    const open = problemItems.filter(
+      (problem) => !problem.resolved && !resolvedProblems.has(String(problem.id)),
+    );
     $('problemsNavCount').hidden = !open.length;
     $('problemsNavCount').textContent = number(open.length);
     $('problemCount').textContent = open.length ? `${open.length} to review` : '';
@@ -528,14 +532,22 @@
         el('time', '', prettyDate(problem.created_at, true)),
       );
       const resolve = button('Mark resolved', 'secondary compact', 'check');
+      resolve.disabled = resolvingProblems.has(String(problem.id));
       resolve.addEventListener('click', async () => {
-        const result = await action(
-          resolve,
-          `/api/problems/${encodeURIComponent(problem.id)}/resolve`,
-          {},
-          'Problem marked resolved.',
-        );
-        if (result) await poll();
+        const id = String(problem.id);
+        if (resolvingProblems.has(id)) return;
+        resolvingProblems.add(id);
+        resolve.disabled = true;
+        try {
+          await api(`/api/problems/${encodeURIComponent(problem.id)}/resolve`, {});
+          resolvedProblems.add(id);
+          toast('Problem marked resolved.');
+        } catch (error) {
+          toast(error.message, true);
+        } finally {
+          resolvingProblems.delete(id);
+          renderProblems();
+        }
       });
       card.append(body, resolve);
       return card;
@@ -1229,13 +1241,26 @@
     const entries = documentEntries(job),
       downloads = el('div', 'artifact-links');
     entries.forEach(([label, path]) => {
-      const link = el('a', 'button secondary');
+      const row = el('div', 'document-file'),
+        open = button(`Open ${label}`, 'secondary', 'file'),
+        link = el('a', 'button quiet');
+      open.addEventListener('click', async () => {
+        open.disabled = true;
+        try {
+          const result = await api('/api/artifact/open', { path });
+          toast(`Opening ${text(result.name, label)} in your document app.`);
+        } catch (error) {
+          dialogError(error);
+        } finally {
+          open.disabled = false;
+        }
+      });
       link.href = `/api/artifact?path=${encodeURIComponent(path)}`;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
       link.setAttribute('download', '');
-      link.append(icon('download'), document.createTextNode(label));
-      downloads.append(link);
+      link.setAttribute('aria-label', `Download ${label}`);
+      link.append(icon('download'), document.createTextNode('Download'));
+      row.append(open, link);
+      downloads.append(row);
     });
     if (entries.length) docs.append(downloads);
     else docs.append(el('p', 'document-empty', 'No documents generated for this role yet.'));

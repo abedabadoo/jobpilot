@@ -256,6 +256,7 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
 
     state = {"quitting": False}
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
+    webview.settings["ALLOW_DOWNLOADS"] = True
     window = webview.create_window(
         "JobPilot",
         SERVICE_URL,
