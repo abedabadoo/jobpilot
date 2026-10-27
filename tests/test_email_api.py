@@ -1,5 +1,6 @@
 import threading
 import time
+from email.message import EmailMessage
 
 import pytest
 from test_api import api
@@ -214,6 +215,180 @@ def test_email_errors_are_actionable_without_exposing_server_details(email_api, 
     status = wait_done(client)
     assert status["state"] == "error" and "app password" in status["message"]
     assert client.get("/api/problems").json()["problems"][0]["category"] == "email"
+
+
+def test_unavailable_linkedin_page_keeps_the_alert_as_a_reviewable_opportunity(
+    email_api, monkeypatch
+):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    mail = EmailMessage()
+    mail["Subject"] = "Your security jobs"
+    mail.set_content("HTML version")
+    mail.add_alternative(
+        '<article><a href="https://www.linkedin.com/jobs/view/123/">Cloud Security Engineer</a>'
+        "<p>Northstar Systems · Cincinnati, OH</p></article>",
+        subtype="html",
+    )
+    alerts = collectors.import_eml(mail.as_bytes())
+    monkeypatch.setattr(collectors, "sync_email", lambda config: result(alerts))
+    monkeypatch.setattr(collectors, "validate_public_url", lambda url: url)
+    monkeypatch.setattr(
+        collectors,
+        "_get_public",
+        lambda url: (
+            "<html><title>Sign in | LinkedIn</title><main>Sign in to view jobs</main></html>",
+            url,
+        ),
+    )
+
+    client.post("/api/email/sync", headers=headers, json={})
+    status = wait_done(client)
+    assert status["imported"] == 1
+    job = client.get("/api/state").json()["jobs"][0]
+    assert job["title"] == "Cloud Security Engineer"
+    assert job["company"] == "Northstar Systems"
+    assert job["source"] == "email"
+    assert job["status"] == "needs_review"
+    assert job["description_missing"] is True
+
+
+def test_resync_repairs_a_previously_mislabelled_digest_job(email_api, monkeypatch):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    old = service.store.add_job(
+        {
+            "url": "https://www.linkedin.com/jobs/view/456/",
+            "source": "email",
+            "title": "Software Engineer",
+            "company": "Wrong Employer",
+            "description": "Old whole-email digest text. " * 10,
+            "alert_subject": "Your jobs",
+            "status": "skipped",
+            "fit": 0,
+        }
+    )
+    alert = {
+        "url": old["url"],
+        "source": "email",
+        "title": "Cloud Security Engineer",
+        "company": "Northstar Systems",
+        "location": "Cincinnati, OH",
+        "description": "Cloud Security Engineer Northstar Systems Cincinnati, OH",
+        "description_missing": True,
+        "alert_metadata_version": 1,
+        "alert_subject": "Your jobs",
+    }
+    monkeypatch.setattr(collectors, "sync_email", lambda config: result([alert]))
+    monkeypatch.setattr(
+        collectors, "fetch_job", lambda url: (_ for _ in ()).throw(ValueError("Unavailable"))
+    )
+    client.post("/api/email/sync", headers=headers, json={})
+    assert wait_done(client)["imported"] == 0
+    jobs = service.store.jobs()
+    assert len(jobs) == 1 and jobs[0]["id"] == old["id"]
+    assert jobs[0]["title"] == "Cloud Security Engineer"
+    assert jobs[0]["company"] == "Northstar Systems"
+    assert jobs[0]["location"] == "Cincinnati, OH"
+    assert jobs[0]["status"] == "needs_review"
+    assert jobs[0]["description_missing"] is True
+
+
+def test_email_summary_explains_new_existing_filtered_and_removed_links(email_api, monkeypatch):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    def alert(number, title="Security Engineer"):
+        return {
+            "url": f"https://example.com/jobs/{number}",
+            "source": "email",
+            "title": title,
+            "company": "Northstar Systems",
+            "location": "Cincinnati, OH",
+            "description": "Alert summary awaiting the full posting. " * 3,
+            "description_missing": True,
+        }
+
+    existing = service.store.add_job(alert(1))
+    removed = service.store.add_job(alert(2))
+    service.store.remove_job(removed["id"])
+    monkeypatch.setattr(
+        collectors,
+        "sync_email",
+        lambda config: result(
+            [
+                alert(1),
+                alert(2),
+                alert(3),
+                alert(4, "Retail Sales Associate"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        collectors, "fetch_job", lambda url: (_ for _ in ()).throw(ValueError("Unavailable"))
+    )
+
+    client.post("/api/email/sync", headers=headers, json={})
+    status = wait_done(client)
+    assert status["imported"] == 1
+    assert status["existing"] == 1
+    assert status["filtered"] == 1
+    assert status["removed"] == 1
+    assert {j["url"] for j in service.store.jobs()} == {
+        existing["url"],
+        "https://example.com/jobs/3",
+    }
+    assert "1 new" in status["message"] and "1 outside preferences" in status["message"]
+
+
+def test_resync_filters_a_saved_digest_job_after_correcting_its_wrong_title(email_api, monkeypatch):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    old = service.store.add_job(
+        {
+            "url": "https://www.linkedin.com/jobs/view/789/?trk=old",
+            "source": "email",
+            "title": "Security Engineer",
+            "company": "Wrong Employer",
+            "description": "Old digest summary",
+            "description_missing": True,
+            "status": "needs_review",
+            "alert_subject": "Your jobs",
+        }
+    )
+    alert = {
+        "url": "https://www.linkedin.com/jobs/view/789/?trk=email",
+        "source": "email",
+        "title": "Retail Manager",
+        "company": "Actual Employer",
+        "location": "Cincinnati, OH",
+        "description": "Retail Manager Actual Employer Cincinnati, OH",
+        "description_missing": True,
+        "alert_metadata_version": 1,
+        "alert_subject": "Your jobs",
+    }
+    monkeypatch.setattr(
+        collectors,
+        "sync_email",
+        lambda config: result(
+            [
+                alert,
+                {**alert, "url": "https://www.linkedin.com/jobs/view/999/"},
+            ]
+        ),
+    )
+
+    client.post("/api/email/sync", headers=headers, json={})
+    status = wait_done(client)
+    assert status["imported"] == 0 and status["filtered"] == 2
+    jobs = service.store.jobs()
+    assert len(jobs) == 1 and jobs[0]["id"] == old["id"]
+    assert jobs[0]["title"] == "Retail Manager"
+    assert jobs[0]["company"] == "Actual Employer"
+    assert jobs[0]["status"] == "skipped"
 
 
 def test_open_job_link_does_not_wait_for_document_preparation(email_api, monkeypatch):

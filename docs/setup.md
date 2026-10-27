@@ -49,7 +49,7 @@ The PyInstaller output contains the desktop launcher; installing also supplies t
 ## First use
 
 1. Replace the fictional profile with your contact details and career history.
-2. Set target roles and location, then enable search or import a posting.
+2. Set target roles and location, then select **Start monitoring** above the opportunities. Choose a check interval; the next check and results from each source appear in that panel. **Search now** runs a single check even while monitoring is paused.
 3. Use **Review** to inspect fit, job-description keywords, and tailored document exports.
 4. Open the job in your usual browser and apply there. Click **Applied?** when finished; the role moves to Applied.
 

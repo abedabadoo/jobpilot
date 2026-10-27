@@ -122,3 +122,148 @@ def test_oversize_message_is_counted_but_not_imported(mailbox, monkeypatch):
     assert result["messages_checked"] == 2
     assert result["links_found"] == 0
     assert result["messages_skipped"] == 2
+
+
+def test_multipart_digest_matches_each_link_to_its_own_job_card():
+    mail = EmailMessage()
+    mail["Subject"] = "Information Security Analyst job at Harbor Digital - Actively recruiting"
+    mail.set_content(
+        "Recent jobs https://www.linkedin.com/comm/jobs/view/101/?trk=email "
+        "https://www.linkedin.com/comm/jobs/view/202/?trk=email"
+    )
+    mail.add_alternative(
+        """<table><tbody>
+        <tr><td><a href="https://www.linkedin.com/comm/jobs/view/101/?trk=logo"><img></a></td>
+        <td><a href="https://www.linkedin.com/comm/jobs/view/101/?trk=card"><table><tbody>
+        <tr><td><a href="https://www.linkedin.com/comm/jobs/view/101/?trk=title">Information Security Analyst</a></td></tr>
+        <tr><td><p>Harbor Digital · United States (Remote)</p></td></tr>
+        <tr><td><p>Actively recruiting</p></td></tr></tbody></table></a></td></tr>
+        <tr><td><a href="https://www.linkedin.com/comm/jobs/view/202/?trk=logo"><img></a></td>
+        <td><a href="https://www.linkedin.com/comm/jobs/view/202/?trk=card"><table><tbody>
+        <tr><td><a href="https://www.linkedin.com/comm/jobs/view/202/?trk=title">Cloud Security Engineer</a></td></tr>
+        <tr><td><p>Northstar Systems · Cincinnati, OH (Hybrid)</p></td></tr>
+        <tr><td><p>Actively recruiting</p></td></tr></tbody></table></a></td></tr>
+        </tbody></table>""",
+        subtype="html",
+    )
+    jobs = collectors.import_eml(mail.as_bytes())
+    assert [(j["url"], j["title"], j["company"], j["location"]) for j in jobs] == [
+        (
+            "https://www.linkedin.com/jobs/view/101/",
+            "Information Security Analyst",
+            "Harbor Digital",
+            "United States (Remote)",
+        ),
+        (
+            "https://www.linkedin.com/jobs/view/202/",
+            "Cloud Security Engineer",
+            "Northstar Systems",
+            "Cincinnati, OH (Hybrid)",
+        ),
+    ]
+    assert all(j["description_missing"] is True for j in jobs)
+    assert "Northstar" not in jobs[0]["description"]
+    assert "Harbor" not in jobs[1]["description"]
+
+
+def test_greenhouse_support_links_are_not_job_opportunities():
+    mail = EmailMessage()
+    mail["Subject"] = "Manage your job applications"
+    mail.set_content(
+        "Visit https://support.greenhouse.io/hc/en-us/articles/12345 or https://support.greenhouse.io/hc/en-us"
+    )
+    assert collectors.import_eml(mail.as_bytes()) == []
+
+
+def test_card_call_to_action_does_not_replace_the_role_title():
+    mail = EmailMessage()
+    mail["Subject"] = "Your new job alerts"
+    mail.set_content("HTML version")
+    mail.add_alternative(
+        '<article><a href="https://example.com/jobs/123">Security Engineer</a>'
+        '<a href="https://example.com/jobs/123">View job</a></article>',
+        subtype="html",
+    )
+    jobs = collectors.import_eml(mail.as_bytes())
+    assert jobs[0]["title"] == "Security Engineer"
+
+
+@pytest.mark.parametrize(
+    "protected",
+    [
+        {"status": "applied"},
+        {"status": "confirmed"},
+        {"status": "prepared", "documents": {"resume": "saved.pdf"}},
+        {"status": "needs_review", "uncertain": True},
+        {"status": "needs_review", "attempts": 1},
+        {
+            "status": "needs_review",
+            "browser_handoff": {"mode": "default_browser", "state": "opened"},
+        },
+    ],
+)
+def test_email_metadata_repair_preserves_application_work(tmp_path, protected):
+    from jobpilot.store import Store
+
+    store = Store(tmp_path / "email.sqlite")
+    original = store.add_job(
+        {
+            "url": "https://example.com/jobs/123",
+            "source": "email",
+            "title": "Original title",
+            "company": "Original Employer",
+            "description": "Original posting",
+            "alert_subject": "Your jobs",
+            **protected,
+        }
+    )
+    refreshed = store.add_job(
+        {
+            "url": original["url"],
+            "source": "email",
+            "alert_metadata_version": 1,
+            "title": "Security Engineer",
+            "company": "Corrected Employer",
+            "description": "New alert card",
+            "description_missing": True,
+            "status": "needs_review",
+            "alert_subject": "Your jobs",
+        }
+    )
+    assert refreshed["id"] == original["id"]
+    assert refreshed["title"] == original["title"]
+    assert refreshed["company"] == original["company"]
+    for key, value in protected.items():
+        assert refreshed[key] == value
+
+
+def test_email_metadata_repair_preserves_an_explicit_dashboard_skip(tmp_path):
+    from jobpilot.store import Store
+
+    store = Store(tmp_path / "email.sqlite")
+    original = store.add_job(
+        {
+            "url": "https://example.com/jobs/123",
+            "source": "email",
+            "title": "Software Engineer",
+            "company": "First Employer",
+            "description": "Original whole-email digest. " * 5,
+            "status": "skipped",
+            "note": "Skipped in dashboard.",
+        }
+    )
+    refreshed = store.add_job(
+        {
+            "url": original["url"],
+            "source": "email",
+            "alert_metadata_version": 1,
+            "title": "Security Engineer",
+            "company": "Corrected Employer",
+            "description": "A corrected alert card.",
+            "description_missing": True,
+            "status": "needs_review",
+            "note": "Full posting needs review.",
+        }
+    )
+    assert refreshed["status"] == "skipped"
+    assert refreshed["note"] == "Skipped in dashboard."

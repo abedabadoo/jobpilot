@@ -122,6 +122,7 @@
     emailDirty = false,
     polling = false,
     connected = false,
+    monitoringPending = false,
     toastTimer,
     detailSignature = '';
   let problemItems = [],
@@ -449,7 +450,10 @@
       ? 'Try another role, company or source.'
       : 'Run a search or add a job link to start preparing.';
     $('visibleCount').textContent =
-      `${number(jobs.length)} ${jobs.length === 1 ? 'opportunity' : 'opportunities'}`;
+      query || source !== 'all'
+        ? `${number(jobs.length)} of ${number(pool.length)} opportunities`
+        : `${number(jobs.length)} ${jobs.length === 1 ? 'opportunity' : 'opportunities'}`;
+    $('clearJobFilters').hidden = !query && source === 'all';
     renderApplied();
   }
   function renderApplied() {
@@ -471,27 +475,13 @@
       `${number(jobs.length)} ${jobs.length === 1 ? 'application' : 'applications'}`;
   }
   function renderWorker() {
-    const worker = state.worker || {},
-      settings = state.settings || {};
-    $('workerState').textContent = worker.searching
-      ? 'Searching for roles'
-      : settings.search_enabled
-        ? 'Search scheduled'
-        : 'Search paused';
-    $('workerDot').className =
-      `dot ${worker.searching || settings.search_enabled ? 'teal' : 'amber'}`;
+    const worker = state.worker || {};
+    $('workerState').textContent = worker.searching ? 'Checking job sources' : 'Ready';
+    $('workerDot').className = 'dot teal';
     $('workerCurrent').textContent = worker.searching
       ? 'New listings will appear in your opportunities.'
-      : settings.search_enabled
-        ? `Checks every ${settings.search_interval_minutes || 30} minutes.`
-        : 'Search when you want, or enable automatic discovery.';
+      : 'JobPilot is running on this PC.';
     $('heartbeat').textContent = relative(worker.heartbeat);
-    $('lastSearch').textContent = relative(worker.last_search);
-    $('toggleSearch').replaceChildren(
-      icon(settings.search_enabled ? 'pause' : 'play'),
-      el('span', '', settings.search_enabled ? 'Pause search' : 'Resume search'),
-    );
-    $('toggleSearch').disabled = !connected;
     $('searchNow').disabled = !connected;
     $('workerExtra').replaceChildren(
       el('span', '', 'Document preparation'),
@@ -502,6 +492,110 @@
           ? friendlyMessage(worker.model_status, 'Local model status unavailable')
           : 'Uses your saved career facts',
       ),
+    );
+  }
+  function monitorSettings() {
+    const monitor = state?.search_monitor || {},
+      settings = state?.settings || {};
+    return {
+      ...monitor,
+      enabled: monitor.enabled ?? Boolean(settings.search_enabled),
+      interval_minutes: monitor.interval_minutes ?? settings.search_interval_minutes ?? 30,
+      last_search_at: monitor.last_search_at || state?.worker?.last_search,
+    };
+  }
+  function renderNextSearch() {
+    if (!state) return;
+    const monitor = monitorSettings();
+    let next = 'Paused';
+    if (!connected) next = 'Service unavailable';
+    else if (state.worker?.searching) next = 'Checking now';
+    else if (monitor.enabled) {
+      const remaining = Date.parse(monitor.next_search_at) - Date.now();
+      next = Number.isFinite(remaining)
+        ? remaining <= 0
+          ? 'Due now'
+          : `In ${Math.ceil(remaining / 60000)}m`
+        : 'Scheduled';
+    }
+    $('nextSearch').textContent = next;
+    $('nextSearch').title = monitor.next_search_at ? prettyDate(monitor.next_search_at, true) : '';
+  }
+  function renderMonitoring() {
+    const monitor = monitorSettings(),
+      searching = state.worker?.searching;
+    $('monitorState').textContent = searching
+      ? monitor.enabled
+        ? 'Checking now'
+        : 'Checking now · monitoring paused'
+      : monitor.enabled
+        ? 'Monitoring on'
+        : 'Monitoring paused';
+    $('monitorDot').className = `dot ${monitor.enabled || searching ? 'teal' : 'amber'}`;
+    $('monitorDescription').textContent = monitor.enabled
+      ? `Every ${monitor.interval_minutes} minutes · New roles appear here while JobPilot runs on this PC.`
+      : 'Start monitoring to check for new roles automatically. Search now runs a single check.';
+    $('lastSearch').textContent = relative(monitor.last_search_at);
+    $('lastSearch').title = monitor.last_search_at ? prettyDate(monitor.last_search_at, true) : '';
+    renderNextSearch();
+    $('toggleSearch').replaceChildren(
+      icon(monitor.enabled ? 'pause' : 'play'),
+      el('span', '', monitor.enabled ? 'Pause monitoring' : 'Start monitoring'),
+    );
+    $('toggleSearch').className = `button ${monitor.enabled ? 'secondary' : 'primary'}`;
+    $('toggleSearch').disabled = !connected || monitoringPending;
+    const interval = $('monitorInterval'),
+      value = String(monitor.interval_minutes);
+    if (![...interval.options].some((option) => option.value === value)) {
+      interval.add(new Option(`${value} minutes`, value));
+    }
+    interval.value = value;
+    interval.disabled = !connected || monitoringPending;
+    const result = monitor.last_result;
+    $('monitorResult').textContent = result
+      ? `${number(result.imported || 0)} new opportunities · ${number(result.checked || 0)} checked · ${number(result.existing || 0)} already saved · ${number(result.filtered || 0)} filtered in the last check`
+      : 'Results will appear after your first check.';
+    const sources = result?.sources || monitor.sources || [];
+    $('monitorSources').hidden = !sources.length;
+    const problems = sources.filter((source) =>
+      ['error', 'blocked', 'failed', 'partial', 'warning', 'limited'].includes(source.status),
+    ).length;
+    $('monitorSourceHealth').hidden = !problems;
+    $('monitorSourceHealth').textContent =
+      `${number(problems)} ${problems === 1 ? 'source needs' : 'sources need'} attention`;
+    $('monitorSourcesBody').replaceChildren(
+      ...sources.map((source) => {
+        const row = el('tr'),
+          name = el('th', '', source.source || 'Unknown source');
+        name.scope = 'row';
+        const status = source.status || 'Unknown';
+        row.append(
+          name,
+          ...['checked', 'imported', 'existing', 'filtered'].map((key) =>
+            el('td', '', number(source[key] || 0)),
+          ),
+        );
+        const statusCell = el(
+          'td',
+          '',
+          {
+            ok: 'Checked',
+            error: 'Needs attention',
+            blocked: 'Blocked',
+            failed: 'Failed',
+            partial: 'Partial results',
+            empty: 'No matches',
+          }[status] || status,
+        );
+        if (source.message)
+          statusCell.append(
+            el('span', 'source-message', friendlyMessage(source.message, 'Check this source.')),
+          );
+        if (['error', 'blocked', 'failed', 'partial', 'warning', 'limited'].includes(status))
+          statusCell.classList.add('source-problem');
+        row.append(statusCell);
+        return row;
+      }),
     );
   }
   function renderProblems() {
@@ -736,6 +830,8 @@
         ['Messages checked', sync.messages_checked ?? 0],
         ['Job links found', sync.links_found ?? 0],
         ['Opportunities added', sync.imported ?? 0],
+        ['Already saved', sync.existing ?? 0],
+        ['Filtered', sync.filtered ?? 0],
       ].forEach(([label, value]) => {
         const item = el('div');
         item.append(el('span', '', label), el('strong', '', value));
@@ -797,6 +893,7 @@
     renderIdentity();
     renderJobs();
     renderWorker();
+    renderMonitoring();
     renderConnections();
     renderProblems();
     if (activeView === 'profile') renderProfile();
@@ -840,9 +937,12 @@
       $('serviceBanner').hidden = false;
       $('serviceBanner').textContent =
         'The local service is unavailable. JobPilot will reconnect automatically. Displayed data may be from the last update.';
-      ['searchNow', 'toggleSearch'].forEach((id) => {
+      ['searchNow', 'toggleSearch', 'monitorInterval'].forEach((id) => {
         $(id).disabled = true;
       });
+      $('monitorState').textContent = 'Service unavailable';
+      $('monitorDot').className = 'dot amber';
+      renderNextSearch();
     } finally {
       polling = false;
     }
@@ -1406,17 +1506,40 @@
     $(id).addEventListener(id === 'jobQuery' ? 'input' : 'change', renderJobs),
   );
   $('appliedQuery').addEventListener('input', renderApplied);
+  $('clearJobFilters').addEventListener('click', () => {
+    $('jobQuery').value = '';
+    $('sourceFilter').value = 'all';
+    renderJobs();
+  });
   $('searchNow').addEventListener('click', () =>
     action($('searchNow'), '/api/control', { action: 'search' }, 'Search requested.'),
   );
-  $('toggleSearch').addEventListener('click', () =>
-    action(
+  $('toggleSearch').addEventListener('click', async () => {
+    const enabled = monitorSettings().enabled;
+    monitoringPending = true;
+    renderMonitoring();
+    await action(
       $('toggleSearch'),
       '/api/control',
-      { search_enabled: !state.settings.search_enabled },
-      state.settings.search_enabled ? 'Automatic search paused.' : 'Automatic search resumed.',
-    ),
-  );
+      { search_enabled: !enabled },
+      enabled ? 'Monitoring paused.' : 'Monitoring started. Checking for new roles.',
+    );
+    monitoringPending = false;
+    renderMonitoring();
+  });
+  $('monitorInterval').addEventListener('change', async (event) => {
+    const interval = Number(event.target.value);
+    monitoringPending = true;
+    renderMonitoring();
+    await action(
+      $('monitorInterval'),
+      '/api/settings',
+      { search_interval_minutes: interval },
+      'Monitoring interval saved.',
+    );
+    monitoringPending = false;
+    renderMonitoring();
+  });
   $('editProfile').addEventListener('click', showProfileEditor);
   $('settingsForm').addEventListener('input', () => {
     settingsDirty = true;
@@ -1481,4 +1604,5 @@
   session().catch(() => {});
   poll();
   setInterval(poll, 3000);
+  setInterval(renderNextSearch, 1000);
 })();

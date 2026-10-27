@@ -21,6 +21,8 @@ Each opportunity also has **Review** and **Remove** controls. Removed jobs are e
 
 Search and document preparation run locally and can continue while the dashboard is closed to the system tray. Opening a job link is independent of the document worker.
 
+Use **Start monitoring** above the opportunity list to keep checking automatically. Choose a check interval, or use **Search now** for a single check. The panel shows the next check, new opportunities, already saved jobs, filtered results, and each source's availability. Every configured role is searched locally and remotely when enabled. The result limit applies to each role/location query. Source delays and rate limits can affect when a posting appears; limited sources pause while the others continue.
+
 ## Documents and keywords
 
 The resume uses a single-column layout with readable type, clear section rules, aligned role headers, and PDF and Word exports. Cover letters use the role, employer, career history, and relevant job keywords. The role detail lists extracted tools and disciplines, including terms beyond the current profile's skill list.
@@ -34,6 +36,8 @@ In a role's **Review** window, **Open** launches the PDF or Word file in your us
 ## Gmail and email alerts
 
 The Email workspace supports a read-only inbox connection, **Connect & test**, and **Sync now**, with the last check time, messages checked, job links found, and import counts. Credentials stay in Windows Credential Manager. Reading uses a read-only mailbox and `BODY.PEEK`, so messages are not marked read. A scan limit and date window keep each sync bounded; the interface reports when more messages exist than were checked.
+
+Each job in a digest keeps its own title, employer, and location. Alerts remain available for review when the full posting cannot be read, and a later sync can correct incomplete alert records. Email receipt time is kept separately from the posting date. Sync results distinguish new opportunities, already saved jobs, and alerts outside your preferences.
 
 For Gmail, use a Google app password with `imap.gmail.com` on port `993`. A normal Google account password is not suitable. See [email setup](docs/setup.md#email-alerts). EML alerts can also be imported without a persistent inbox connection.
 

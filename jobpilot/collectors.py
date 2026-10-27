@@ -263,7 +263,11 @@ def _alert_job_link(url: str) -> bool:
             return bool(re.search(r"/jobs/view/\d+", parts.path))
         if host == "indeed.com" or host.endswith(".indeed.com"):
             return bool(parse_qs(parts.query).get("jk"))
-        if host.endswith((".lever.co", ".ashbyhq.com", ".greenhouse.io")):
+        if host.endswith(".greenhouse.io"):
+            return host in {"boards.greenhouse.io", "job-boards.greenhouse.io"} and bool(
+                re.search(r"^/[^/]+/(?:jobs/)?\d+/?$", parts.path)
+            )
+        if host.endswith((".lever.co", ".ashbyhq.com")):
             return len(parts.path.strip("/").split("/")) >= 2
         return bool(re.search(r"/(?:jobs?|careers?|positions?)/[^/?]+", parts.path, re.I))
     except ValueError:
@@ -293,16 +297,20 @@ def _alert_destination(url: str) -> str:
     )
 
 
-def _alert_title_company(title: str, subject: str, url: str) -> tuple[str, str]:
-    title = re.sub(r"\s+", " ", title).strip()
-    if not title or title.casefold() in {
+def _alert_has_title(title: str) -> bool:
+    return bool(title.strip()) and title.strip().casefold() not in {
         "view job",
         "view jobs",
         "apply",
         "apply now",
         "see job",
         "learn more",
-    }:
+    }
+
+
+def _alert_title_company(title: str, subject: str, url: str) -> tuple[str, str]:
+    title = re.sub(r"\s+", " ", title).strip()
+    if not _alert_has_title(title):
         title = (
             subject
             if re.search(
@@ -323,6 +331,53 @@ def _alert_title_company(title: str, subject: str, url: str) -> tuple[str, str]:
     return title, company
 
 
+def _alert_anchor_metadata(anchor, url: str) -> tuple[str, str, str, str]:
+    """Read one alert card, stopping before a digest's other job cards."""
+    card = anchor.find_parent(["article", "tr", "li"]) or anchor.parent or anchor
+    company, location = "", ""
+    for parent in [anchor, *anchor.parents]:
+        if parent.name not in {"a", "article", "tr", "li", "td", "tbody", "table", "div"}:
+            continue
+        links = set()
+        for link in parent.find_all("a", href=True):
+            try:
+                destination = _alert_destination(link["href"])
+                if _alert_job_link(destination):
+                    links.add(_canonical_link(destination))
+            except ValueError:
+                continue
+        if links - {url}:
+            break
+        metadata = next(
+            (
+                match
+                for text in parent.find_all("p")
+                if (
+                    match := re.match(
+                        r"^(.+?)\s+[\u00b7\u2022]\s+(.+)$", text.get_text(" ", strip=True)
+                    )
+                )
+            ),
+            None,
+        )
+        if metadata:
+            card = parent
+            company, location = metadata[1].strip(), metadata[2].strip()
+            break
+    labels = []
+    for link in [anchor, *card.find_all("a", href=True)]:
+        try:
+            if _canonical_link(_alert_destination(link.get("href", ""))) != url:
+                continue
+        except ValueError:
+            continue
+        label = link.get_text(" ", strip=True)
+        if _alert_has_title(label) and not link.find("a"):
+            labels.append(label)
+    title = min(labels, key=len) if labels else anchor.get_text(" ", strip=True)
+    return title, company, location, card.get_text(" ", strip=True)[:12000]
+
+
 def import_eml(text: str | bytes) -> list[dict]:
     if len(text) > _MAX_BODY:
         raise ValueError("Email exceeds the import limit")
@@ -330,7 +385,6 @@ def import_eml(text: str | bytes) -> list[dict]:
         text if isinstance(text, bytes) else text.encode(), policy=policy.default
     )
     candidates, description_parts = [], []
-    contexts = {}
     for part in message.walk():
         if part.get_content_disposition() == "attachment" or part.get_content_type() not in (
             "text/plain",
@@ -344,18 +398,21 @@ def import_eml(text: str | bytes) -> list[dict]:
         if part.get_content_type() == "text/html":
             soup = BeautifulSoup(body, "html.parser")
             for anchor in soup.find_all("a", href=True):
-                candidates.append((anchor["href"], anchor.get_text(" ", strip=True)))
-                card = anchor.find_parent(["article", "tr", "li"]) or anchor.parent
-                if card:
-                    contexts[anchor["href"]] = card.get_text(" ", strip=True)[:12000]
+                try:
+                    url = _alert_destination(anchor["href"])
+                    if _alert_job_link(url):
+                        title, company, location, context = _alert_anchor_metadata(anchor, url)
+                        candidates.append((url, title, company, location, context))
+                except ValueError:
+                    continue
             body = soup.get_text(" ", strip=True)
         description_parts.append(str(body))
         candidates.extend(
-            (match.rstrip(".,);]>"), "") for match in re.findall(r'https?://[^\s<>"\']+', str(body))
+            (match.rstrip(".,);]>\u201c\u201d"), "", "", "", "")
+            for match in re.findall(r'https?://[^\s<>"\']+', str(body))
         )
-    jobs, seen = [], set()
-    for url, title in candidates:
-        context = contexts.get(url)
+    selected = {}
+    for url, title, company, location, context in candidates:
         try:
             url = _alert_destination(url)
         except ValueError:
@@ -363,17 +420,22 @@ def import_eml(text: str | bytes) -> list[dict]:
         if not _alert_job_link(url):
             continue
         url = _canonical_link(url)
-        if url in seen:
-            continue
-        seen.add(url)
-        title, company = _alert_title_company(title, str(message.get("Subject", "")), url)
+        rank = (_alert_has_title(title), bool(company), bool(location), -len(title))
+        if url not in selected or rank > selected[url][0]:
+            selected[url] = (rank, title, company, location, context)
+    jobs = []
+    for url, (_, title, company, location, context) in selected.items():
+        title, inferred_company = _alert_title_company(title, str(message.get("Subject", "")), url)
         jobs.append(
             _job(
                 "email",
                 url,
                 title,
-                company=company,
+                company=company or inferred_company,
+                location=location,
                 description=context or "\n".join(description_parts)[:20000],
+                description_missing=True,
+                alert_metadata_version=1,
                 alert_received_at=str(message.get("Date", "")),
                 alert_subject=str(message.get("Subject", "")),
                 alert_from=str(message.get("From", "")),
@@ -530,18 +592,30 @@ def _imap_jobs(config: dict) -> list[dict]:
     return sync_email(config)["jobs"]
 
 
+# A denied source is paused across scheduled scans; no proxy or challenge bypass.
+_source_cooldowns: dict[str, float] = {}
+_search_result: dict = {}
+
+
+def _search_clock():
+    import time
+
+    return time.monotonic()
+
+
 def _jobspy_search(**kwargs):
     from jobspy import scrape_jobs
 
     class WarningRecorder(logging.Handler):
         def emit(self, record):
+            warning = {
+                "source": record.name.partition(":")[2].lower(),
+                "note": record.getMessage()[:300],
+                "level": record.levelname.lower(),
+            }
             with _errors_lock:
-                _search_warnings.append(
-                    {
-                        "source": record.name.partition(":")[2].lower(),
-                        "note": record.getMessage()[:300],
-                    }
-                )
+                if warning not in _search_warnings:
+                    _search_warnings.append(warning)
 
     handler = WarningRecorder(level=logging.WARNING)
     loggers = [
@@ -556,6 +630,18 @@ def _jobspy_search(**kwargs):
     finally:
         for logger in loggers:
             logger.removeHandler(handler)
+    # Recent JobSpy versions also expose failures as dataframe metadata.
+    for kind in ("errors", "warnings"):
+        for source, notes in getattr(frame, "attrs", {}).get(kind, {}).items():
+            for note in notes if isinstance(notes, list) else [notes]:
+                warning = {
+                    "source": str(source).lower(),
+                    "note": str(note)[:300],
+                    "level": "error" if kind == "errors" else "warning",
+                }
+                with _errors_lock:
+                    if warning not in _search_warnings:
+                        _search_warnings.append(warning)
     return frame.to_dict("records")
 
 
@@ -573,7 +659,7 @@ def _board_jobs(source: str, board: str) -> list[dict]:
     data = json.loads(content)
     rows = data if isinstance(data, list) else data.get("jobs", [])
     jobs = []
-    for row in rows[:500]:
+    for row in rows:
         if source == "greenhouse":
             job = _job(
                 source,
@@ -625,8 +711,14 @@ def get_last_errors() -> list[dict]:
         return [dict(error) for error in _errors]
 
 
+def get_last_search_result() -> dict:
+    """Coverage from the last bounded scan, separate from application decisions."""
+    with _errors_lock:
+        return json.loads(json.dumps(_search_result))
+
+
 def discover(settings: dict, profile: dict) -> list[dict]:
-    jobs, errors = [], []
+    jobs, summaries, seen = [], {}, set()
     with _errors_lock:
         _search_warnings.clear()
     sources = settings.get("sources", ["linkedin", "indeed"])
@@ -634,10 +726,44 @@ def discover(settings: dict, profile: dict) -> list[dict]:
         sources = [sources] if sources != "both" else ["linkedin", "indeed"]
     titles = settings.get("search_titles") or settings.get("target_roles") or ["Security Engineer"]
     locations = settings.get("locations") or [settings.get("location", "Cincinnati, OH")]
-    if settings.get("remote") and "Remote" not in locations:
-        locations = [*locations, "Remote"]
+    if isinstance(titles, str):
+        titles = [titles]
+    if isinstance(locations, str):
+        locations = [locations]
+    titles = list(dict.fromkeys(titles))[:8]
+    locations = list(dict.fromkeys(locations))[:4]
+    if settings.get("remote") and not any(str(value).casefold() == "remote" for value in locations):
+        locations = [*locations[:3], "Remote"]
+    # The quota applies to each role/location query, so the first role cannot
+    # consume every later role's or remote search's allowance.
     limit = max(1, min(int(settings.get("results_per_source", 20)), 100))
-    for source in sources:
+    hours_old = max(1, min(int(settings.get("hours_old", 168)), 8760))
+
+    def summary(source):
+        return summaries.setdefault(
+            source,
+            {
+                "source": source,
+                "status": "ok",
+                "checked": 0,
+                "queries_attempted": 0,
+                "queries_planned": 0,
+                "descriptions_missing": 0,
+                "message": "Search completed.",
+            },
+        )
+
+    def add_job(job, state):
+        if not job.get("url") or not job.get("title") or job["url"] in seen:
+            return False
+        seen.add(job["url"])
+        jobs.append(job)
+        state["checked"] += 1
+        if not job.get("description"):
+            state["descriptions_missing"] += 1
+        return True
+
+    for source in dict.fromkeys(sources):
         if source not in (
             "linkedin",
             "indeed",
@@ -649,23 +775,39 @@ def discover(settings: dict, profile: dict) -> list[dict]:
             "hellowork",
         ):
             continue
-        source_found = 0
-        for title in list(titles)[:8]:
-            for location in list(locations)[:4]:
-                if source_found >= limit:
-                    break
+        state = summary(source)
+        state["queries_planned"] = len(titles) * len(locations)
+        remaining = _source_cooldowns.get(source, 0) - _search_clock()
+        if remaining > 0:
+            state.update(
+                status="blocked",
+                retry_after_seconds=math.ceil(remaining),
+                message="Source access is paused after a rate limit or access denial. Try again after the cooldown.",
+            )
+            continue
+        stop_source = False
+        for title in titles:
+            for location in locations:
+                remote = str(location).casefold() == "remote"
                 try:
+                    state["queries_attempted"] += 1
                     rows = _jobspy_search(
                         site_name=[source],
                         search_term=title,
-                        location=location,
-                        results_wanted=limit - source_found,
-                        hours_old=max(1, min(int(settings.get("hours_old", 168)), 8760)),
-                        fetch_description=True,
+                        location="USA"
+                        if remote and source in ("indeed", "glassdoor")
+                        else location,
+                        is_remote=remote and source in ("indeed", "glassdoor"),
+                        results_wanted=limit,
+                        hours_old=hours_old,
+                        # LinkedIn's public cards are useful without a burst of
+                        # per-job detail requests, which have repeatedly hit 429.
+                        fetch_description=source != "linkedin",
                         country_indeed="USA",
                         verbose=1,
                     )
-                    for row in rows[: limit - source_found]:
+                    query_found = 0
+                    for row in rows:
                         source_url = _text(row.get("job_url"))
                         direct_url = _text(row.get("job_url_direct"))
                         if direct_url:
@@ -677,58 +819,127 @@ def discover(settings: dict, profile: dict) -> list[dict]:
                         if not url:
                             continue
                         description = _text(row.get("description"))
-                        if not description:
-                            errors.append(
-                                {
-                                    "source": source,
-                                    "note": "Description unavailable; review required: " + url,
-                                }
-                            )
-                        jobs.append(
-                            _job(
-                                source,
-                                url,
-                                row.get("title"),
-                                row.get("company"),
-                                row.get("location"),
-                                row.get("description"),
-                                row.get("date_posted"),
-                                source_url=_canonical_link(source_url) if source_url else None,
-                                apply_url=_canonical_link(direct_url) if direct_url else None,
-                                description_missing=not bool(description),
-                                requisition_id=_text(row.get("id")),
-                                salary_min=row.get("min_amount")
-                                if isinstance(row.get("min_amount"), (int, float))
-                                and not math.isnan(row.get("min_amount"))
-                                else None,
-                            )
+                        job = _job(
+                            source,
+                            url,
+                            row.get("title"),
+                            row.get("company"),
+                            row.get("location"),
+                            row.get("description"),
+                            row.get("date_posted"),
+                            source_url=_canonical_link(source_url) if source_url else None,
+                            apply_url=_canonical_link(direct_url) if direct_url else None,
+                            description_missing=not bool(description),
+                            is_remote=_text(row.get("is_remote")).casefold() in ("true", "1"),
+                            requisition_id=_text(row.get("id")),
+                            salary_min=row.get("min_amount")
+                            if isinstance(row.get("min_amount"), (int, float))
+                            and not math.isnan(row.get("min_amount"))
+                            else None,
                         )
-                        source_found += 1
+                        if add_job(job, state):
+                            query_found += 1
+                        if query_found >= limit:
+                            break
+                    with _errors_lock:
+                        notices = [
+                            dict(item) for item in _search_warnings if item["source"] == source
+                        ]
+                    warnings = [item["note"] for item in notices]
+                    if warnings:
+                        state.update(
+                            status="partial",
+                            message="Some source results or details could not be read.",
+                            note=warnings[-1],
+                        )
+                        if not rows and any(item.get("level") == "error" for item in notices):
+                            state.update(
+                                status="error", message="The source search could not finish."
+                            )
+                            stop_source = True
+                    if any(
+                        re.search(r"\b(?:429|403)\b|captcha|access denied", note, re.I)
+                        for note in warnings
+                    ):
+                        _source_cooldowns[source] = _search_clock() + 900
+                        state.update(
+                            status="blocked",
+                            retry_after_seconds=900,
+                            message="The source rate limited or denied access. Available listings were kept; further requests are paused for 15 minutes.",
+                        )
+                        stop_source = True
                 except Exception as exc:
-                    errors.append(
-                        {"source": source, "note": f"{type(exc).__name__}: {str(exc)[:240]}"}
+                    state.update(
+                        status="error",
+                        message="The source search could not finish.",
+                        note=f"{type(exc).__name__}: {str(exc)[:240]}",
                     )
+                    response = getattr(exc, "response", None)
+                    if getattr(response, "status_code", None) in (403, 429):
+                        retry = (getattr(response, "headers", {}) or {}).get("Retry-After", "900")
+                        try:
+                            delay = max(900, int(retry))
+                        except (TypeError, ValueError):
+                            from email.utils import parsedate_to_datetime
+
+                            try:
+                                retry_at = parsedate_to_datetime(str(retry))
+                                delay = max(
+                                    900,
+                                    math.ceil(
+                                        (retry_at - datetime.now(timezone.utc)).total_seconds()
+                                    ),
+                                )
+                            except (TypeError, ValueError, OverflowError):
+                                delay = 900
+                        _source_cooldowns[source] = _search_clock() + delay
+                        state.update(status="blocked", retry_after_seconds=delay)
+                    stop_source = True
+                if stop_source:
                     break
+            if stop_source:
+                break
+        if state["descriptions_missing"] and state["status"] == "ok":
+            state.update(
+                status="partial",
+                message="Listings found; some descriptions require review on the job page.",
+            )
+        if source == "linkedin":
+            state["details_mode"] = "listing_cards"
     for board in list(settings.get("ats_boards", []))[:30]:
+        source = str(board.get("source", "ats")).lower()
+        state = summary(source)
+        state["queries_planned"] += 1
+        state["queries_attempted"] += 1
         try:
-            jobs.extend(_board_jobs(str(board["source"]).lower(), str(board["board"])))
+            for job in _board_jobs(source, str(board["board"])):
+                add_job(job, state)
         except Exception as exc:
-            errors.append(
-                {
-                    "source": str(board.get("source", "ats")),
-                    "note": f"{type(exc).__name__}: {str(exc)[:240]}",
-                }
+            state.update(
+                status="error",
+                message="An employer board could not be read.",
+                note=f"{type(exc).__name__}: {str(exc)[:240]}",
             )
     email_config = settings.get("email") or {}
     if email_config.get("enabled"):
+        state = summary("email")
         try:
-            jobs.extend(_imap_jobs(email_config))
+            for job in _imap_jobs(email_config):
+                add_job(job, state)
         except Exception as exc:
-            errors.append({"source": "email", "note": f"{type(exc).__name__}: {str(exc)[:240]}"})
-    unique = {}
-    for job in jobs:
-        if job["url"] not in unique:
-            unique[job["url"]] = job
+            state.update(
+                status="error",
+                message="Email job alerts could not be read.",
+                note=f"{type(exc).__name__}: {str(exc)[:240]}",
+            )
     with _errors_lock:
-        _errors[:] = errors + list(_search_warnings)
-    return list(unique.values())
+        _errors[:] = [
+            dict(state, note=state.get("note") or state["message"])
+            for state in summaries.values()
+            if state["status"] in ("error", "blocked")
+        ]
+        _search_result.clear()
+        _search_result.update(
+            sources=list(summaries.values()), completed_at=datetime.now(timezone.utc).isoformat()
+        )
+    return jobs

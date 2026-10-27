@@ -25,7 +25,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .assets import asset_directory
-from .core import eligibility, facts_map, role_assessment, score_job
+from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
 from .documents import local_endpoint, prepare
 from .remote_runtime import RemoteRuntime
 from .store import Store
@@ -84,6 +84,7 @@ store.set("_session_token", TOKEN)
 stop_event = threading.Event()
 remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
 search_requested = threading.Event()
+discovery_lock = threading.Lock()
 application_lock = threading.RLock()
 cleanup_previews = {}
 cleanup_preview_lock = threading.RLock()
@@ -181,6 +182,7 @@ def classify_job(job, profile, conf):
         "alert_subject",
         "alert_received_at",
         "alert_from",
+        "alert_metadata_version",
     }
     job = {k: v for k, v in job.items() if k in fields}
     job["status"] = "queued"
@@ -230,78 +232,189 @@ def classify_job(job, profile, conf):
     return job
 
 
+def _search_clock():
+    return datetime.now(timezone.utc)
+
+
+def search_monitor():
+    conf = settings()
+    last = store.get("last_search")
+    next_check = None
+    if not worker["searching"]:
+        if search_requested.is_set():
+            next_check = _search_clock()
+        elif conf["search_enabled"]:
+            try:
+                previous = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                if previous.tzinfo is None:
+                    previous = previous.replace(tzinfo=timezone.utc)
+                next_check = previous + timedelta(minutes=conf["search_interval_minutes"])
+            except (AttributeError, TypeError, ValueError):
+                next_check = _search_clock()
+    return {
+        "enabled": conf["search_enabled"],
+        "interval_minutes": conf["search_interval_minutes"],
+        "last_search_at": last,
+        "next_search_at": next_check.isoformat() if next_check else None,
+        "last_result": store.get("last_search_result"),
+    }
+
+
+def search_due():
+    next_check = search_monitor()["next_search_at"]
+    return bool(next_check and datetime.fromisoformat(next_check) <= _search_clock())
+
+
 def discover_once():
     from . import collectors
 
+    if not discovery_lock.acquire(blocking=False):
+        return
     worker["searching"] = True
     conf = settings()
     conf["search_titles"] = conf["target_roles"]
     conf["locations"] = [conf["location"]]
     profile = store.get("profile")
     email_revision = store.get("_email_config_revision", 0)
-    email_imported = 0
+    count_keys = ["checked", "imported", "existing", "filtered", "removed"]
+    source_rows = {}
+    result = {"status": "ok"}
+
+    def source_row(source):
+        return source_rows.setdefault(
+            str(source or "other").lower(),
+            {
+                "source": str(source or "other").lower(),
+                "status": "ok",
+                "message": "",
+                **dict.fromkeys(count_keys, 0),
+            },
+        )
+
     try:
-        existing_ids = {job["id"] for job in store.jobs()}
+        existing_jobs = store.jobs()
+        existing_ids = {job["id"] for job in existing_jobs}
+        email_routes = {
+            canonical_url(existing[key])
+            for existing in existing_jobs
+            if existing.get("source") == "email"
+            for key in ["url", "source_url", "apply_url"]
+            if existing.get(key)
+        }
         before = len(existing_ids)
         jobs = collectors.discover(conf, profile)
         for job in jobs:
+            row = source_row(job.get("source"))
+            row["checked"] += 1
             if not job.get("url") or not job.get("title"):
+                row["filtered"] += 1
                 continue
             job = classify_job(job, profile, conf)
             if job.get("status") == "skipped":
+                row["filtered"] += 1
+                if job.get("source") == "email" and canonical_url(job["url"]) in email_routes:
+                    store.add_job(job)
                 continue
             saved = store.add_job(job)
-            if saved is not None and saved["id"] not in existing_ids:
-                if job.get("source") == "email":
-                    email_imported += 1
+            if saved is None:
+                row["removed"] += 1
+            elif saved["id"] not in existing_ids:
+                row["imported"] += 1
                 existing_ids.add(saved["id"])
-        worker["last_search"] = store.now()
-        store.set("last_search", worker["last_search"])
-        store.event(
-            f"Search finished: {len(store.jobs()) - before} new matching opportunities; {len(jobs)} source records checked."
-        )
-        for error in getattr(collectors, "get_last_errors", lambda: [])():
-            source = error.get("source", "") if isinstance(error, dict) else ""
+            else:
+                row["existing"] += 1
+        details = getattr(collectors, "get_last_search_result", lambda: {})()
+        for detail in details.get("sources", []):
+            row = source_row(detail.get("source"))
+            row.update({key: value for key, value in detail.items() if key not in count_keys})
+        errors = getattr(collectors, "get_last_errors", lambda: [])()
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            row = source_row(error.get("source"))
+            if row["status"] == "ok":
+                row["status"] = (
+                    "partial" if "Description unavailable" in error.get("note", "") else "error"
+                )
+        for row in source_rows.values():
             source_name = {
                 "linkedin": "LinkedIn",
                 "indeed": "Indeed",
-                "gmail": "Gmail",
                 "email": "Gmail",
-                "greenhouse": "Greenhouse",
-                "lever": "Lever",
-                "ashby": "Ashby",
-            }.get(str(source).lower(), "A job source")
-            report_error(
-                f"{source_name} could not finish its search. Try again later.",
-                category="search",
-                detail=error,
-            )
+                "gmail": "Gmail",
+            }.get(row["source"], row["source"].capitalize())
+            if row["status"] in ["blocked", "error"]:
+                message = (
+                    f"{source_name} is temporarily limiting searches. Other sources will continue."
+                    if row["status"] == "blocked"
+                    else f"{source_name} search is temporarily unavailable. Other sources will continue."
+                )
+                report_error(
+                    message,
+                    category="search",
+                    detail=row,
+                    url=row.get("url")
+                    or {
+                        "linkedin": "https://www.linkedin.com/jobs/",
+                        "indeed": "https://www.indeed.com/jobs",
+                    }.get(row["source"]),
+                )
+            elif row["checked"]:
+                old_message = f"{source_name} could not finish its search. Try again later."
+                for problem in store.problems():
+                    if (
+                        not problem.get("resolved")
+                        and problem.get("category") == "search"
+                        and problem["message"] == old_message
+                    ):
+                        store.resolve_problem(problem["id"])
+        store.event(
+            f"Search finished: {len(store.jobs()) - before} new matching opportunities; {len(jobs)} source records checked."
+        )
         if conf.get("email", {}).get("enabled"):
             summary = getattr(collectors, "get_last_email_result", lambda: None)()
             if summary and not email_task_running.is_set():
+                email_counts = source_rows.get("email", {})
                 _save_email_result(
-                    summary, imported=email_imported, expected_revision=email_revision
+                    {
+                        **summary,
+                        **{
+                            key: email_counts.get(key, 0)
+                            for key in ["existing", "filtered", "removed"]
+                        },
+                    },
+                    imported=email_counts.get("imported", 0),
+                    expected_revision=email_revision,
                 )
+        if any(row["status"] != "ok" for row in source_rows.values()):
+            result["status"] = "partial" if jobs else "error"
     except Exception as exc:
+        result["status"] = "error"
         report_error(
             "The job search could not finish. Try again later.",
             category="search",
             detail=f"{type(exc).__name__}: {exc}",
         )
     finally:
+        finished = _search_clock().isoformat()
+        worker["last_search"] = finished
+        store.set("last_search", finished)
+        result.update(
+            finished_at=finished,
+            sources=list(source_rows.values()),
+            **{key: sum(row[key] for row in source_rows.values()) for key in count_keys},
+        )
+        store.set("last_search_result", result)
         worker["searching"] = False
+        discovery_lock.release()
 
 
 def discovery_loop():
-    next_search = time.monotonic() + 5
     while not stop_event.wait(1):
         worker["heartbeat"] = store.now()
-        conf = settings()
-        requested = search_requested.is_set()
-        if requested or (conf["search_enabled"] and time.monotonic() >= next_search):
+        if search_due():
             search_requested.clear()
             discover_once()
-            next_search = time.monotonic() + conf["search_interval_minutes"] * 60
 
 
 def prepare_job(job_id, preserve_review=False):
@@ -761,6 +874,7 @@ def state():
         "remote_access": remote_runtime.status(),
         "problems": store.problems(),
         "email_sync": email_status(),
+        "search_monitor": search_monitor(),
     }
 
 
@@ -818,6 +932,7 @@ def remote_control(body: dict):
 @app.post("/api/control")
 def control(body: dict):
     conf = store.get("settings", {})
+    was_enabled = conf.get("search_enabled", False)
     if body.get("action") == "shutdown":
         from . import browser
 
@@ -864,6 +979,10 @@ def control(body: dict):
             application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
         )
     store.set("settings", conf)
+    if conf.get("search_enabled") and not was_enabled:
+        search_requested.set()
+    elif not conf.get("search_enabled") and body.get("action") != "search":
+        search_requested.clear()
     store.event(
         "Worker controls updated: searching "
         + ("enabled" if conf.get("search_enabled") else "paused")
@@ -877,6 +996,7 @@ def control(body: dict):
 @app.post("/api/settings")
 def save_settings(body: dict):
     conf = settings()
+    was_enabled = conf["search_enabled"]
     allowed = (
         set(DEFAULTS)
         - {"remote_intervention_enabled", "intervention_timeout_seconds", "application_mode"}
@@ -929,6 +1049,10 @@ def save_settings(body: dict):
                 400, "Launch the installed desktop executable before enabling logon startup."
             )
     store.set("settings", conf)
+    if conf["search_enabled"] and not was_enabled:
+        search_requested.set()
+    elif not conf["search_enabled"]:
+        search_requested.clear()
     store.event("Search and operation preferences saved.")
     return {"ok": True}
 
@@ -1752,6 +1876,9 @@ def email_status():
         "messages_skipped": 0,
         "links_found": 0,
         "imported": 0,
+        "existing": 0,
+        "filtered": 0,
+        "removed": 0,
         "truncated": False,
     }
     return {
@@ -1770,6 +1897,9 @@ def _save_email_result(result, imported=0, complete_task=False, expected_revisio
         "messages_skipped",
         "links_found",
         "truncated",
+        "existing",
+        "filtered",
+        "removed",
     ]
     summary = {key: result[key] for key in fields if key in result}
     result_state = result.get("state", "connected")
@@ -1797,8 +1927,40 @@ def _save_email_result(result, imported=0, complete_task=False, expected_revisio
     return summary
 
 
+def _enrich_email_alert(alert):
+    """Keep the alert usable when a detail link returns a sign-in or generic page."""
+    from . import collectors
+
+    job = dict(alert)
+    try:
+        details = collectors.fetch_job(job.get("url", ""))
+        if details.get("needs_description_review"):
+            raise ValueError("The job page did not provide a verified job posting.")
+        job.update({key: value for key, value in details.items() if value not in [None, "", []]})
+        job["source"] = "email"
+        if job.get("url") != alert.get("url"):
+            job["source_url"] = alert.get("url")
+        job["description_missing"] = (
+            len(str(job.get("description", "")).strip()) < 80
+            or not job.get("company")
+            or not job.get("title")
+        )
+        for key in ["alert_subject", "alert_received_at", "alert_from", "alert_metadata_version"]:
+            if key in alert:
+                job[key] = alert[key]
+    except Exception as exc:
+        report_error(
+            "The email alert was imported, but the full job posting could not be read. Open its link to check the details.",
+            category="fetch",
+            job=job,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+    return job
+
+
 def _email_work(mode, config):
     from . import collectors
+    from .core import canonical_url
 
     completed = False
     try:
@@ -1807,41 +1969,58 @@ def _email_work(mode, config):
             if mode == "checking"
             else collectors.sync_email(config)
         )
-        imported = 0
-        existing = {job["id"] for job in store.jobs()}
+        imported, unchanged, filtered, removed = 0, 0, 0, 0
+        existing_jobs = store.jobs()
+        existing = {job["id"] for job in existing_jobs}
+        existing_email_routes = {
+            canonical_url(saved[key])
+            for saved in existing_jobs
+            if saved.get("source") == "email"
+            for key in ["url", "source_url", "apply_url"]
+            if saved.get(key)
+        }
+
+        def refresh_filtered(classified):
+            if classified.get("source") == "email" and any(
+                canonical_url(classified[key]) in existing_email_routes
+                for key in ["url", "source_url", "apply_url"]
+                if classified.get(key)
+            ):
+                store.add_job(classified)
+
         fetches, fetch_deadline = 0, time.monotonic() + 45
         for alert in result.get("jobs", []) if mode == "syncing" else []:
             job = dict(alert)
+            classified = classify_job(job, store.get("profile"), settings())
+            if classified.get("status") == "skipped":
+                filtered += 1
+                refresh_filtered(classified)
+                continue
             if (
-                (len(str(job.get("description", ""))) < 80 or not job.get("company"))
+                (
+                    job.get("description_missing")
+                    or len(str(job.get("description", ""))) < 80
+                    or not job.get("company")
+                )
                 and fetches < 3
                 and time.monotonic() < fetch_deadline
             ):
                 fetches += 1
-                try:
-                    details = collectors.fetch_job(job.get("url", ""))
-                    job.update(
-                        {
-                            key: value
-                            for key, value in details.items()
-                            if value not in [None, "", []]
-                        }
-                    )
-                    for key in ["alert_subject", "alert_received_at", "alert_from"]:
-                        if key in alert:
-                            job[key] = alert[key]
-                except Exception as exc:
-                    report_error(
-                        "The email alert was imported, but the full job posting could not be read. Open its link to check the details.",
-                        category="fetch",
-                        job=job,
-                        detail=f"{type(exc).__name__}: {exc}",
-                    )
+                job = _enrich_email_alert(job)
             try:
-                saved = store.add_job(classify_job(job, store.get("profile"), settings()))
+                classified = classify_job(job, store.get("profile"), settings())
+                if classified.get("status") == "skipped":
+                    filtered += 1
+                    refresh_filtered(classified)
+                    continue
+                saved = store.add_job(classified)
                 if saved is not None and saved["id"] not in existing:
                     imported += 1
                     existing.add(saved["id"])
+                elif saved is not None:
+                    unchanged += 1
+                else:
+                    removed += 1
             except Exception as exc:
                 report_error(
                     "A job alert could not be imported. Open the posting and import its link again.",
@@ -1849,6 +2028,17 @@ def _email_work(mode, config):
                     job=job,
                     detail=f"{type(exc).__name__}: {exc}",
                 )
+        if mode == "syncing":
+            result.update(
+                existing=unchanged,
+                filtered=filtered,
+                removed=removed,
+                message=(
+                    f"Found {result.get('links_found', 0)} job links: {imported} new, "
+                    f"{unchanged} already saved, {filtered} outside preferences, "
+                    f"{removed} previously removed."
+                ),
+            )
         with email_sync_lock:
             _save_email_result(result, imported, complete_task=True)
             completed = True

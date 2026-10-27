@@ -92,6 +92,7 @@ def dashboard():
         "resolve_status": 200,
         "open_status": 200,
         "downloads": downloads,
+        "settings_status": 200,
     }
 
     def route_api(route):
@@ -113,7 +114,19 @@ def dashboard():
             result = {"problems": [copy.deepcopy(problem)]}
         elif route.request.method == "POST":
             control["calls"].append((path, route.request.post_data_json))
-            if path == "/api/problems/10/resolve":
+            if path in {"/api/settings", "/api/control"}:
+                payload = route.request.post_data_json
+                status = control["settings_status"]
+                if status == 200:
+                    state["settings"].update({k: v for k, v in payload.items() if k != "action"})
+                    monitor = state.get("search_monitor")
+                    if monitor:
+                        monitor["enabled"] = state["settings"].get("search_enabled", False)
+                        monitor["interval_minutes"] = state["settings"].get(
+                            "search_interval_minutes", 30
+                        )
+                result = {"ok": True} if status == 200 else {"detail": "Please try again."}
+            elif path == "/api/problems/10/resolve":
                 status = control["resolve_status"]
                 result = {"ok": True} if status == 200 else {"detail": "Please try again."}
             elif path == "/api/artifact/open":

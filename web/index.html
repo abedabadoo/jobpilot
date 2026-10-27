@@ -92,6 +92,66 @@
           </div>
         </header>
         <div class="notice amber-notice" hidden="" id="serviceBanner"></div>
+        <section class="panel monitoring-panel" aria-labelledby="monitorTitle">
+          <div class="panel-heading monitoring-heading">
+            <div>
+              <h2 id="monitorTitle">Job monitoring</h2>
+              <p id="monitorDescription">
+                Check for new roles automatically while JobPilot runs on this PC.
+              </p>
+            </div>
+            <div class="monitoring-controls">
+              <label for="monitorInterval">Check every</label>
+              <select id="monitorInterval" disabled>
+                <option value="5">5 minutes</option>
+                <option value="10">10 minutes</option>
+                <option value="15">15 minutes</option>
+                <option value="30" selected>30 minutes</option>
+                <option value="60">60 minutes</option>
+              </select>
+              <button class="button primary" id="toggleSearch" disabled>
+                <span data-icon="play"></span><span>Start monitoring</span>
+              </button>
+            </div>
+          </div>
+          <div class="monitoring-summary">
+            <div class="monitoring-state">
+              <span class="dot amber" id="monitorDot"></span
+              ><strong id="monitorState">Connecting</strong>
+            </div>
+            <dl class="monitoring-timing">
+              <div>
+                <dt>Last check</dt>
+                <dd id="lastSearch">Never</dd>
+              </div>
+              <div>
+                <dt>Next check</dt>
+                <dd id="nextSearch">—</dd>
+              </div>
+            </dl>
+          </div>
+          <p id="monitorResult" class="monitoring-result">
+            Results will appear after your first check.
+          </p>
+          <details class="monitoring-sources" id="monitorSources" hidden>
+            <summary>
+              Source results <span class="source-problem" id="monitorSourceHealth" hidden></span>
+            </summary>
+            <table aria-label="Latest results by source">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Checked</th>
+                  <th>New</th>
+                  <th>Already saved</th>
+                  <th>Filtered</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="monitorSourcesBody"></tbody>
+            </table>
+          </details>
+        </section>
         <div class="dashboard-grid">
           <div class="dashboard-primary">
             <section class="panel queue-panel">
@@ -153,15 +213,18 @@
                 </div>
               </div>
               <div class="queue-footer">
-                <span>Review documents, then apply in your browser.</span
-                ><span id="visibleCount">0 opportunities</span>
+                <span>Review documents, then apply in your browser.</span>
+                <div class="pipeline-actions">
+                  <button class="text-button" id="clearJobFilters" hidden>Clear filters</button
+                  ><span id="visibleCount">0 opportunities</span>
+                </div>
               </div>
             </section>
           </div>
           <aside aria-label="Worker and search information" class="dashboard-aside">
             <section class="panel worker-panel">
               <div class="panel-heading">
-                <h2>Discovery</h2>
+                <h2>Local worker</h2>
                 <span class="worker-symbol" data-icon="pulse"></span>
               </div>
               <div class="worker-state">
@@ -174,16 +237,7 @@
                   <dt>Last heartbeat</dt>
                   <dd id="heartbeat">—</dd>
                 </div>
-                <div>
-                  <dt>Last search</dt>
-                  <dd id="lastSearch">—</dd>
-                </div>
               </dl>
-              <div class="worker-controls">
-                <button class="button secondary compact" id="toggleSearch">
-                  <span data-icon="pause"></span><span>Pause search</span>
-                </button>
-              </div>
               <div class="worker-extended" id="workerExtra"></div>
             </section>
             <section class="profile-nudge">

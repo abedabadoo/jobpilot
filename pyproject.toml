@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jobpilot-local"
-version = "1.2.0"
+version = "1.3.0"
 description = "A Windows job discovery and application tracker with tailored resumes, cover letters, and email alerts."
 readme = "README.md"
 requires-python = ">=3.13"

@@ -158,9 +158,48 @@ class Store:
         if (
             existing.get("documents")
             or existing.get("uncertain")
+            or (
+                existing.get("status") == "skipped"
+                and existing.get("note") == "Skipped in dashboard."
+            )
             or existing.get("status")
             in ["confirmed", "manually_verified", "applied", "submitting", "applying", "preparing"]
         ):
+            connection.execute(
+                "UPDATE jobs SET payload=? WHERE id=?", (json.dumps(existing), job_id)
+            )
+            return self.decorate(job_id, existing)
+        # Older email digests assigned the subject's first role to every URL.
+        # Repair those saved rows once from per-card metadata, without changing
+        # jobs that already have application evidence or an active handoff.
+        handoff = existing.get("browser_handoff") or {}
+        manual_active = (
+            handoff.get("mode") == "default_browser" and handoff.get("state") != "closed"
+        )
+        if (
+            incoming.get("source") == existing.get("source") == "email"
+            and incoming.get("alert_metadata_version", 0)
+            > existing.get("alert_metadata_version", 0)
+            and not existing.get("attempts")
+            and not manual_active
+        ):
+            for key in [
+                "title",
+                "company",
+                "location",
+                "description",
+                "description_missing",
+                "alert_subject",
+                "alert_received_at",
+                "alert_from",
+                "alert_metadata_version",
+                "status",
+                "note",
+                "fit",
+                "review_reason",
+            ]:
+                if key in incoming:
+                    existing[key] = incoming[key]
             connection.execute(
                 "UPDATE jobs SET payload=? WHERE id=?", (json.dumps(existing), job_id)
             )

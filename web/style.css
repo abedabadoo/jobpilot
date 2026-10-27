@@ -461,6 +461,105 @@ nav {
   gap: 24px;
   align-items: start;
 }
+.monitoring-panel {
+  margin-bottom: 24px;
+  border-color: #527b83;
+}
+.monitoring-heading {
+  flex-wrap: wrap;
+}
+.monitoring-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.monitoring-controls label {
+  color: var(--muted);
+  font-size: 14px;
+}
+.monitoring-controls select {
+  width: auto;
+  min-height: 42px;
+}
+.monitoring-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+  padding: 0 22px;
+}
+.monitoring-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.monitoring-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  margin: 0;
+  font-size: 14px;
+}
+.monitoring-timing > div {
+  display: flex;
+  gap: 10px;
+}
+.monitoring-timing dt {
+  color: var(--muted);
+}
+.monitoring-timing dd {
+  margin: 0;
+}
+.monitoring-result {
+  margin: 14px 22px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.monitoring-sources {
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+.monitoring-sources summary {
+  padding: 12px 22px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.monitoring-sources summary span {
+  display: inline-block;
+  margin-left: 12px;
+}
+.monitoring-sources table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 13px;
+}
+.monitoring-sources th,
+.monitoring-sources td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.monitoring-sources thead {
+  color: var(--muted);
+  background: var(--panel-high);
+}
+.monitoring-sources th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.monitoring-sources tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.source-message {
+  display: block;
+  min-width: 140px;
+  overflow-wrap: anywhere;
+}
+.source-problem {
+  color: var(--amber);
+}
 .dashboard-primary {
   display: contents;
 }

@@ -18,6 +18,10 @@ If a scan checks fewer messages than the inbox contains in the chosen date windo
 
 ## Search or document preparation fails
 
+Check the **Job monitoring** panel for each source's status and new, already saved, and filtered counts. Use **Clear filters** beside the opportunity count if a previous source or text filter is hiding jobs. Email digests can contain several roles; sync results count each distinct link, and alerts outside your preferences do not enter the opportunity list.
+
+LinkedIn may rate limit public searches. JobPilot keeps available cards, pauses further requests to that source for at least 15 minutes, and continues the other sources. Missing descriptions require review on the original posting. A rate limit does not mean Gmail alerts or Indeed searches also failed. Monitoring polls on the chosen interval while this PC is running; it does not receive instant posting notifications from job boards.
+
 Open **Problems** for a plain-language explanation and a link to the affected role. Import the public employer posting when a board omits the description or blocks a fetch. Resolve a problem after addressing it. Technical diagnostics remain in local logs for development.
 
 Local-model failures use deterministic fact ranking rather than preventing document preparation. Check Ollama and the configured model if you want local ranking restored.
