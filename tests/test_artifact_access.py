@@ -22,7 +22,7 @@ def test_open_document_uses_default_app_and_does_not_wait_for_worker(documents, 
     target = folder / name
     target.write_bytes(b"document fixture")
     opened = []
-    monkeypatch.setattr("os.startfile", lambda path: opened.append(str(path)))
+    monkeypatch.setattr("jobpilot.artifacts.open_document", lambda path: opened.append(str(path)))
     entered, release = threading.Event(), threading.Event()
 
     def busy_worker():
@@ -51,7 +51,7 @@ def test_open_document_requires_token(documents, monkeypatch):
     target = folder / "resume.pdf"
     target.write_bytes(b"document")
     opened = []
-    monkeypatch.setattr("os.startfile", lambda path: opened.append(path))
+    monkeypatch.setattr("jobpilot.artifacts.open_document", lambda path: opened.append(path))
     assert client.post("/api/artifact/open", json={"path": str(target)}).status_code == 403
     assert opened == []
 
@@ -62,7 +62,7 @@ def test_open_document_cannot_execute_other_artifacts(documents, monkeypatch, na
     target = folder / name
     target.write_text("fixture", encoding="utf-8")
     opened = []
-    monkeypatch.setattr("os.startfile", lambda path: opened.append(path))
+    monkeypatch.setattr("jobpilot.artifacts.open_document", lambda path: opened.append(path))
     response = client.post("/api/artifact/open", headers=headers, json={"path": str(target)})
     assert response.status_code == 400
     assert "PDF" in response.json()["detail"]
@@ -74,7 +74,7 @@ def test_open_document_rejects_missing_file_and_path_escape(documents, tmp_path,
     outside = tmp_path / "private.pdf"
     outside.write_text("private", encoding="utf-8")
     opened = []
-    monkeypatch.setattr("os.startfile", lambda path: opened.append(path))
+    monkeypatch.setattr("jobpilot.artifacts.open_document", lambda path: opened.append(path))
     for path, status in [(outside, 403), (folder / "missing.pdf", 404)]:
         response = client.post("/api/artifact/open", headers=headers, json={"path": str(path)})
         assert response.status_code == status
@@ -98,7 +98,7 @@ def test_default_app_failure_suggests_download_without_exposing_paths(documents,
     def fail(_):
         raise OSError(f"System failure at {target}")
 
-    monkeypatch.setattr("os.startfile", fail)
+    monkeypatch.setattr("jobpilot.artifacts.open_document", fail)
     response = client.post("/api/artifact/open", headers=headers, json={"path": str(target)})
     assert response.status_code == 503
     assert "Download" in response.json()["detail"]

@@ -1,4 +1,4 @@
-"""JobPilot's independent Windows desktop, tray and local-service launcher."""
+"""JobPilot desktop and independent local-service launcher."""
 
 from __future__ import annotations
 
@@ -15,15 +15,21 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from jobpilot.platforms import (
+    PosixDesktopInstance,
+    application_data_dir,
+    find_ollama,
+    notify_error,
+    set_startup,
+)
+
 SERVICE_URL = "http://127.0.0.1:8765"
 OLLAMA_URL = "http://127.0.0.1:11436"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def data_directory() -> Path:
-    return Path(
-        os.environ.get("JOBPILOT_DATA_DIR", str(Path(os.environ["LOCALAPPDATA"]) / "JobPilot"))
-    ).resolve()
+    return application_data_dir()
 
 
 def child_environment(data_dir: Path) -> dict[str, str]:
@@ -42,6 +48,7 @@ def child_environment(data_dir: Path) -> dict[str, str]:
             "OLLAMA_MAX_LOADED_MODELS": "1",
             "OLLAMA_KEEP_ALIVE": "15m",
             "PYTHONUNBUFFERED": "1",
+            "PYINSTALLER_RESET_ENVIRONMENT": "1",
         }
     )
     return env
@@ -83,9 +90,13 @@ def control_worker(payload: dict, *, base_url: str = SERVICE_URL) -> dict:
 
 
 def app_paths() -> dict:
+    frozen = getattr(sys, "frozen", False)
+    native_bundle = frozen and sys.platform == "darwin"
     root = (
-        Path(sys.executable).resolve().parent
-        if getattr(sys, "frozen", False)
+        Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        if native_bundle
+        else Path(sys.executable).resolve().parent
+        if frozen
         else Path(__file__).resolve().parent
     )
     config = root / "installed_paths.json"
@@ -94,16 +105,23 @@ def app_paths() -> dict:
     paths.setdefault("source", str(root))
     default_python = (
         data / "runtime" / "Scripts" / "python.exe"
-        if getattr(sys, "frozen", False)
+        if frozen and sys.platform == "win32"
         else Path(sys.executable)
     )
     paths.setdefault("python", str(default_python))
+    paths.setdefault("ollama", find_ollama())
     paths.setdefault(
-        "ollama", str(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Ollama" / "ollama.exe")
+        "desktop_exe", str(root / "JobPilot.exe") if sys.platform == "win32" else sys.executable
     )
-    paths.setdefault("desktop_exe", str(root / "JobPilot.exe"))
     paths.setdefault("data", str(data))
+    paths["bundled_service"] = native_bundle
     return paths
+
+
+def service_command(paths: dict) -> list[str]:
+    if paths.get("bundled_service"):
+        return [paths["desktop_exe"], "--service-child", "--port", "8765"]
+    return [paths["python"], "-m", "jobpilot.service", "--port", "8765"]
 
 
 def endpoint_ready(base_url: str, path: str, *, service: bool = False) -> bool:
@@ -147,6 +165,7 @@ def start_child(
             stderr=stderr,
             creationflags=CREATE_NO_WINDOW,
             close_fds=True,
+            start_new_session=sys.platform != "win32",
         )
     (data / f"{log_name}.pid").write_text(str(process.pid), encoding="ascii")
     return process
@@ -157,28 +176,35 @@ def ensure_services(paths: dict, data: Path) -> dict:
     env = child_environment(data)
     status = {}
     if not endpoint_ready(OLLAMA_URL, "/api/version"):
-        ollama = Path(paths["ollama"])
-        if not ollama.is_file():
-            raise RuntimeError(
-                "Ollama is missing. Run scripts/Install-JobPilot.ps1 to repair the installation."
-            )
-        process = start_child(
-            [str(ollama), "serve"], cwd=ollama.parent, env=env, log_name="ollama", data=data
-        )
-        wait_endpoint(OLLAMA_URL, "/api/version", process)
-        status["ollama_pid"] = process.pid
+        ollama = Path(paths.get("ollama") or "")
+        status["ollama_available"] = False
+        if ollama.is_file():
+            try:
+                process = start_child(
+                    [str(ollama), "serve"], cwd=ollama.parent, env=env, log_name="ollama", data=data
+                )
+                wait_endpoint(OLLAMA_URL, "/api/version", process, seconds=5)
+                status.update(ollama_pid=process.pid, ollama_available=True)
+            except (OSError, RuntimeError):
+                logging.exception("Optional local Ollama could not start; opening JobPilot anyway")
     else:
         status["ollama_reused"] = True
+        status["ollama_available"] = True
     if not endpoint_ready(SERVICE_URL, "/api/health", service=True):
         python = Path(paths["python"])
         source = Path(paths["source"])
-        if not python.is_file() or not (source / "jobpilot" / "service.py").is_file():
+        if not python.is_file() or (
+            not paths.get("bundled_service") and not (source / "jobpilot" / "service.py").is_file()
+        ):
             raise RuntimeError(
-                "JobPilot runtime/source is missing. Run scripts/Install-JobPilot.ps1 to repair it."
+                "JobPilot runtime/source is missing. Reinstall JobPilot to repair it."
             )
-        env["JOBPILOT_DESKTOP_EXE"] = paths["desktop_exe"]
+        if sys.platform == "win32" or paths.get("bundled_service"):
+            env["JOBPILOT_DESKTOP_EXE"] = paths["desktop_exe"]
+        else:
+            env.pop("JOBPILOT_DESKTOP_EXE", None)
         process = start_child(
-            [str(python), "-m", "jobpilot.service", "--port", "8765"],
+            service_command(paths),
             cwd=source,
             env=env,
             log_name="service",
@@ -191,29 +217,13 @@ def ensure_services(paths: dict, data: Path) -> dict:
     return status
 
 
-def set_startup(mode: str, executable: str) -> dict:
-    import winreg
-
-    key_name = r"Software\Microsoft\Windows\CurrentVersion\Run"
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_name) as key:
-        if mode == "enable":
-            if not Path(executable).is_file():
-                raise RuntimeError("Installed JobPilot executable is missing")
-            winreg.SetValueEx(key, "JobPilot", 0, winreg.REG_SZ, f'"{executable}" --background')
-        elif mode == "disable":
-            try:
-                winreg.DeleteValue(key, "JobPilot")
-            except FileNotFoundError:
-                pass
-        try:
-            command = winreg.QueryValueEx(key, "JobPilot")[0]
-        except FileNotFoundError:
-            command = None
-    return {"startup_enabled": command is not None, "command": command}
-
-
 class DesktopInstance:
-    """Per-Windows-session singleton; a second launch opens the first dashboard."""
+    """Per-user desktop singleton; a second launch opens the first dashboard."""
+
+    def __new__(cls, name: str = "JobPilot"):
+        if sys.platform != "win32":
+            return PosixDesktopInstance(name)
+        return super().__new__(cls)
 
     def __init__(self, name: str = "JobPilot"):
         from ctypes import wintypes
@@ -241,6 +251,12 @@ class DesktopInstance:
             self.close()
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def signal_open(self):
+        self.kernel.SetEvent(self.event)
+
+    def wait_for_open(self, timeout: float = 0.5) -> bool:
+        return self.kernel.WaitForSingleObject(self.event, int(timeout * 1000)) == 0
+
     def close(self):
         for name in ("event", "mutex"):
             handle = getattr(self, name, None)
@@ -249,10 +265,22 @@ class DesktopInstance:
                 setattr(self, name, None)
 
 
+def configure_macos_reopen(open_window) -> None:
+    from webview.platforms.cocoa import BrowserView
+
+    # Finder/Dock normally sends an Apple event to the running application
+    # rather than launching another executable. pywebview 6.2 does not handle
+    # that event itself, so extend its delegate before the first native window.
+    class JobPilotAppDelegate(BrowserView.AppDelegate):
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, application, has_windows):
+            open_window()
+            return True
+
+    BrowserView.AppDelegate = JobPilotAppDelegate
+
+
 def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> None:
-    import pystray
     import webview
-    from PIL import Image, ImageDraw
 
     state = {"quitting": False}
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
@@ -267,14 +295,55 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
         background_color="#10151E",
         text_select=True,
     )
-    icon_image = Image.new("RGBA", (64, 64), "#10151E")
-    draw = ImageDraw.Draw(icon_image)
-    draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill="#5EEAD4")
-    draw.line([(23, 21), (23, 39), (26, 43), (32, 43), (36, 39), (36, 21)], fill="#10151E", width=5)
 
     def open_window(*_):
         window.show()
         window.restore()
+
+    def event_watch():
+        while not state["quitting"]:
+            if instance.wait_for_open(0.5):
+                open_window()
+
+    if sys.platform == "darwin":
+        from webview.menu import Menu, MenuAction
+
+        configure_macos_reopen(open_window)
+
+        def quit_native():
+            state["quitting"] = True
+            window.destroy()
+
+        menu = [
+            Menu(
+                "JobPilot",
+                [
+                    MenuAction("Open JobPilot", open_window),
+                    MenuAction("Quit dashboard", quit_native),
+                ],
+            )
+        ]
+        threading.Thread(target=event_watch, name="JobPilotOpenEvent", daemon=True).start()
+        try:
+            # Cocoa's event loop and menus must run on the process main thread.
+            webview.start(
+                gui="cocoa",
+                menu=menu,
+                private_mode=True,
+                storage_path=str(data / "dashboard-webview"),
+            )
+        finally:
+            state["quitting"] = True
+            instance.close()
+        return
+
+    import pystray
+    from PIL import Image, ImageDraw
+
+    icon_image = Image.new("RGBA", (64, 64), "#10151E")
+    draw = ImageDraw.Draw(icon_image)
+    draw.rounded_rectangle((8, 8, 56, 56), radius=12, fill="#5EEAD4")
+    draw.line([(23, 21), (23, 39), (26, 43), (32, 43), (36, 39), (36, 21)], fill="#10151E", width=5)
 
     def action(payload: dict):
         def perform(*_):
@@ -313,11 +382,6 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
             return False
         return True
 
-    def event_watch():
-        while not state["quitting"]:
-            if instance.kernel.WaitForSingleObject(instance.event, 500) == 0:
-                open_window()
-
     window.events.closing += closing
     threading.Thread(target=tray.run, name="JobPilotTray", daemon=True).start()
     threading.Thread(target=event_watch, name="JobPilotOpenEvent", daemon=True).start()
@@ -333,7 +397,8 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
 
 def diagnostic(paths: dict, data: Path) -> dict:
     return {
-        "source_present": (Path(paths["source"]) / "jobpilot" / "service.py").is_file(),
+        "source_present": paths.get("bundled_service", False)
+        or (Path(paths["source"]) / "jobpilot" / "service.py").is_file(),
         "python_present": Path(paths["python"]).is_file(),
         "ollama_present": Path(paths["ollama"]).is_file(),
         "service_ready": endpoint_ready(SERVICE_URL, "/api/health", service=True),
@@ -345,8 +410,14 @@ def diagnostic(paths: dict, data: Path) -> dict:
 
 
 def main() -> int:
+    if "--service-child" in sys.argv[1:]:
+        sys.argv.remove("--service-child")
+        from jobpilot.service import main as service_main
+
+        service_main()
+        return 0
     parser = argparse.ArgumentParser(description="JobPilot desktop and local service")
-    parser.add_argument("--background", action="store_true", help="Start in the system tray")
+    parser.add_argument("--background", action="store_true", help="Start with the dashboard hidden")
     parser.add_argument(
         "--service-only",
         action="store_true",
@@ -355,7 +426,7 @@ def main() -> int:
     parser.add_argument(
         "--startup",
         choices=("enable", "disable", "status"),
-        help="Configure optional logon startup for this Windows user",
+        help="Configure optional sign-in startup for this user",
     )
     parser.add_argument(
         "--diagnose", action="store_true", help="Report installation and service status"
@@ -375,9 +446,15 @@ def main() -> int:
         if not (args.startup or args.diagnose or args.service_only):
             instance = DesktopInstance()
             if not instance.owner:
-                instance.kernel.SetEvent(instance.event)
+                instance.signal_open()
                 return 0
         if args.startup:
+            if (
+                args.startup == "enable"
+                and sys.platform == "darwin"
+                and not paths["bundled_service"]
+            ):
+                raise RuntimeError("Sign-in startup requires the installed JobPilot.app")
             result = set_startup(args.startup, paths["desktop_exe"])
         elif args.diagnose:
             result = diagnostic(paths, data)
@@ -396,9 +473,7 @@ def main() -> int:
         if args.report:
             args.report.write_text(json.dumps({"error": str(error)}, indent=2), encoding="utf-8")
         if not args.service_only and not args.diagnose and not args.startup:
-            ctypes.windll.user32.MessageBoxW(
-                None, f"{error}\n\nLogs: {data / 'logs'}", "JobPilot startup", 0x10
-            )
+            notify_error(f"{error}\n\nLogs: {data / 'logs'}")
         return 1
     finally:
         if instance is not None:

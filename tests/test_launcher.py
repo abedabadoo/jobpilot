@@ -18,6 +18,25 @@ def launcher_module():
     return module
 
 
+def test_posix_children_are_detached_from_desktop_process_group(tmp_path, monkeypatch):
+    launcher = launcher_module()
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    captured = {}
+
+    class Child:
+        pid = 12345
+
+    def popen(*args, **kwargs):
+        captured.update(kwargs)
+        return Child()
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", popen)
+    launcher.start_child(
+        ["example-child"], cwd=tmp_path, env={}, log_name="service-test", data=tmp_path
+    )
+    assert captured.get("start_new_session") is True
+
+
 def test_source_checkout_uses_the_current_python_interpreter(tmp_path, monkeypatch):
     launcher = launcher_module()
     monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path / "data"))
@@ -30,6 +49,7 @@ def test_source_checkout_uses_the_current_python_interpreter(tmp_path, monkeypat
 
 def test_frozen_desktop_uses_its_installed_runtime(tmp_path, monkeypatch):
     launcher = launcher_module()
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
     monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
     monkeypatch.setattr(launcher.sys, "executable", str(tmp_path / "JobPilot.exe"))
@@ -105,9 +125,10 @@ def test_control_client_rejects_external_endpoints():
         launcher.control_worker({"action": "stop"}, base_url="https://example.com")
 
 
-def test_only_one_desktop_instance_owns_launch_until_it_exits():
+def test_only_one_desktop_instance_owns_launch_until_it_exits(tmp_path, monkeypatch):
     """Losing the singleton lets double-clicking launch concurrent workers."""
     launcher = launcher_module()
+    monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path))
     name = "JobPilotTest" + uuid.uuid4().hex
     first = launcher.DesktopInstance(name)
     second = launcher.DesktopInstance(name)
@@ -143,3 +164,90 @@ def test_dashboard_allows_document_downloads_before_creating_webview(tmp_path, m
         launcher.show_dashboard(False, tmp_path, None)
     assert captured["ALLOW_DOWNLOADS"] is True
     assert captured["OPEN_EXTERNAL_LINKS_IN_BROWSER"] is True
+
+
+def test_mac_source_paths_work_without_windows_environment(tmp_path, monkeypatch):
+    launcher = launcher_module()
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    paths = launcher.app_paths()
+    assert paths["python"] == launcher.sys.executable
+    assert paths["desktop_exe"] == launcher.sys.executable
+
+
+def test_frozen_mac_service_uses_bundle_executable_and_resources(tmp_path, monkeypatch):
+    launcher = launcher_module()
+    executable = tmp_path / "JobPilot.app/Contents/MacOS/JobPilot"
+    resources = tmp_path / "JobPilot.app/Contents/Frameworks"
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "_MEIPASS", str(resources), raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    paths = launcher.app_paths()
+    assert Path(paths["source"]) == resources
+    assert launcher.service_command(paths) == [str(executable), "--service-child", "--port", "8765"]
+
+
+def test_missing_optional_ollama_does_not_prevent_service_launch(tmp_path, monkeypatch):
+    launcher = launcher_module()
+    monkeypatch.setattr(
+        launcher, "endpoint_ready", lambda url, *a, **kw: url == launcher.SERVICE_URL
+    )
+    result = launcher.ensure_services({"ollama": "", "source": str(tmp_path)}, tmp_path)
+    assert result["service_reused"] is True
+    assert result["ollama_available"] is False
+
+
+def test_mac_webview_runs_cocoa_on_calling_thread_without_pystray(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    import webview
+
+    launcher = launcher_module()
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher, "configure_macos_reopen", lambda callback: None)
+    monkeypatch.setitem(sys.modules, "pystray", None)
+    captured = {}
+    window = SimpleNamespace(show=lambda: None, restore=lambda: None, destroy=lambda: None)
+    monkeypatch.setattr(webview, "create_window", lambda *a, **kw: window)
+    monkeypatch.setattr(
+        webview, "start", lambda **kw: captured.update(kw, thread=threading.current_thread())
+    )
+    instance = SimpleNamespace(close=lambda: None, wait_for_open=lambda _: False)
+    launcher.show_dashboard(False, tmp_path, instance)
+    assert captured["gui"] == "cocoa"
+    assert captured["thread"] is threading.current_thread()
+    assert captured["menu"]
+
+
+def test_mac_dock_reopen_shows_existing_dashboard(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    launcher = launcher_module()
+    browser = SimpleNamespace(AppDelegate=type("AppDelegate", (), {}))
+    monkeypatch.setitem(
+        sys.modules, "webview.platforms.cocoa", SimpleNamespace(BrowserView=browser)
+    )
+    opened = []
+    launcher.configure_macos_reopen(lambda: opened.append(True))
+    delegate = browser.AppDelegate()
+    assert delegate.applicationShouldHandleReopen_hasVisibleWindows_(None, False) is True
+    assert opened == [True]
+
+
+def test_service_child_dispatches_before_desktop_initialization(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    launcher = launcher_module()
+    captured = []
+    monkeypatch.setitem(
+        sys.modules, "jobpilot.service", SimpleNamespace(main=lambda: captured.append(sys.argv[1:]))
+    )
+    monkeypatch.setattr(sys, "argv", ["JobPilot", "--service-child", "--port", "8765"])
+    monkeypatch.setattr(launcher, "app_paths", lambda: pytest.fail("desktop initialized"))
+    assert launcher.main() == 0
+    assert captured == [["--port", "8765"]]
