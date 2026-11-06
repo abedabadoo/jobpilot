@@ -2,10 +2,11 @@
   "name": "jobpilot-ui",
   "version": "1.0.0",
   "private": true,
-  "description": "Formatting tools for the JobPilot dashboard and remote portal.",
+  "description": "Checks for the JobPilot dashboard and Chrome extension.",
   "scripts": {
-    "format": "prettier --write web remote_web",
-    "format:check": "prettier --check web remote_web"
+    "format": "prettier --write web remote_web extension",
+    "format:check": "prettier --check web remote_web extension",
+    "test:extension": "node --test extension/tests/*.test.cjs"
   },
   "devDependencies": {
     "prettier": "3.9.10"

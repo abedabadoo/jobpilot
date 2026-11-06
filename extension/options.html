@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JobPilot · Profile &amp; settings</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="settings">
+    <header class="page-header">
+      <div>
+        <span class="eyebrow">JOBPILOT AUTOFILL</span>
+        <h1>A profile you control.</h1>
+        <p>Save your answers here. Fill applications in your own signed-in Chrome tabs.</p>
+      </div>
+      <span class="badge">LOCAL FIRST</span>
+    </header>
+    <main>
+      <div id="message" class="notice" role="status" aria-live="polite">
+        Loading your local profile…
+      </div>
+      <form id="profile-form">
+        <div class="section-heading">
+          <div>
+            <h2>Your profile</h2>
+            <p>Leave unknown answers blank. Authorization answers must be your explicit choice.</p>
+          </div>
+          <button class="primary" type="submit">Save profile</button>
+        </div>
+        <div id="profile-fields"></div>
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <h2>Employment</h2>
+              <p>
+                Most recent first. Repeated forms need clear numbered sections; ambiguous records
+                stay blank.
+              </p>
+            </div>
+            <button id="add-experience" type="button">Add employment</button>
+          </div>
+          <div id="experience-records"></div>
+        </section>
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <h2>Education</h2>
+              <p>Include only facts you want to use in applications.</p>
+            </div>
+            <button id="add-education" type="button">Add education</button>
+          </div>
+          <div id="education-records"></div>
+        </section>
+        <div class="actions bottom-save">
+          <button class="primary" type="submit">Save profile</button
+          ><button id="export" type="button">Export JSON</button
+          ><label class="button"
+            >Import JSON<input
+              id="import"
+              class="file-overlay"
+              type="file"
+              accept=".json,application/json" /></label
+          ><button id="restore" type="button" disabled>Restore previous profile</button>
+        </div>
+      </form>
+      <section class="card" aria-labelledby="resume-heading">
+        <h2 id="resume-heading">Your resume</h2>
+        <p>
+          Select a PDF or DOCX up to 5 MiB. It stays in this Chrome profile and is uploaded only
+          when you click <strong>Attach resume</strong> in the extension.
+        </p>
+        <div class="actions">
+          <label class="button"
+            >Choose resume<input
+              id="resume-file"
+              class="file-overlay"
+              type="file"
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" /></label
+          ><button id="remove-resume" type="button">Remove saved resume</button>
+        </div>
+        <p id="resume-status" class="status">No resume selected.</p>
+      </section>
+      <section class="card" aria-labelledby="connection-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="connection-heading">Connect JobPilot</h2>
+            <p>Optional. Your local profile and resume work while JobPilot is offline.</p>
+          </div>
+          <span id="connection-status" class="badge">NOT CONNECTED</span>
+        </div>
+        <ol class="steps">
+          <li>
+            <button id="connect" type="button">Open JobPilot Settings</button>
+            <p>
+              In the dashboard, generate a connection code for this extension. A code lasts five
+              minutes.
+            </p>
+          </li>
+          <li>
+            <label for="pair-code">Paste the connection code</label>
+            <div class="inline-field">
+              <input
+                id="pair-code"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Connection code"
+              /><button id="pair" type="button">Connect</button>
+            </div>
+          </li>
+        </ol>
+        <div class="actions">
+          <button id="sync" type="button">Import JobPilot profile</button
+          ><button id="disconnect" type="button">Disconnect &amp; revoke</button
+          ><button id="forget" class="link" type="button">Forget local connection</button>
+        </div>
+        <p class="hint">
+          Import replaces the saved profile after confirmation. Your previous profile can be
+          restored. Disconnect revokes access in JobPilot; forgetting only removes this browser's
+          credential.
+        </p>
+        <hr />
+        <h3>Prepared resumes</h3>
+        <p>
+          Use a resume prepared for a specific application. Selecting one saves a local copy; it
+          does not attach it to a website.
+        </p>
+        <button id="refresh-documents" type="button">Load prepared resumes</button>
+        <div class="inline-field">
+          <label for="documents" class="sr-only">Prepared resume</label
+          ><select id="documents">
+            <option value="">Load resumes to choose one</option></select
+          ><button id="select-document" type="button">Use this resume</button>
+        </div>
+      </section>
+      <section class="footnote">
+        <h2>Before you submit</h2>
+        <p>
+          Autofill handles native text fields, text areas, selects and clearly labelled yes/no radio
+          groups. Click it again after a form adds more fields. It keeps existing answers unless you
+          enable replacement, and Undo restores the last operation while preserving later edits.
+        </p>
+        <p>
+          Review every answer. Passwords, national IDs, payment details, demographic questions,
+          consent and attestations stay manual. Custom controls, closed shadow roots, cross-origin
+          frames and unclear repeated records may need manual entry. JobPilot never clicks Next or
+          Submit.
+        </p>
+        <p>
+          Your profile, pairing credential and selected resume are stored locally in Chrome. Only
+          the fields filled and the resume explicitly attached are shared with the website. No
+          remote code or third-party upload service is used.
+        </p>
+      </section>
+    </main>
+    <footer>JobPilot Autofill · Profile data is saved in this Chrome profile.</footer>
+    <script src="core.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

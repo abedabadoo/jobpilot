@@ -1,6 +1,6 @@
 # Development
 
-Use Windows and Python 3.13. Follow [setup](setup.md) to create `.venv`, install `requirements.lock` and download Playwright Chromium. Keep a dedicated `JOBPILOT_DATA_DIR` for development, with a fictional profile and searches paused.
+Use Python 3.13. Follow [Windows setup](setup.md) or [macOS setup](macos.md) to create `.venv` and install platform dependencies. Keep a dedicated `JOBPILOT_DATA_DIR` for development, with a fictional profile and searches paused. Mac installs resolve `pyproject.toml`; the frozen Windows lock is not a Mac dependency lock.
 
 Install the development and build extras, then run checks from the repository root:
 
@@ -12,6 +12,8 @@ Install the development and build extras, then run checks from the repository ro
 ```
 
 Browser tests use local HTTP fixtures and temporary data. Configure `PLAYWRIGHT_BROWSERS_PATH` to the directory where Chromium was installed. Tests that use Windows tray, credential-vault or startup APIs need Windows.
+
+For Chrome extension checks, run `npm ci`, `npm run test:extension` and `npm run format:check`. The Python suite includes real Chromium extension tests with disposable fictional profiles. Their copied test manifest grants access to localhost fixtures to simulate Chrome's toolbar gesture; that permission never ships. No user browser profile is opened by tests.
 
 ## Working boundaries
 
@@ -33,5 +35,9 @@ Build and check the Python distributions separately:
 ```
 
 The wheel check installs into a temporary directory and verifies the bundled dashboard and remote portal with fictional data. It does not start workers or open employer sites.
+
+Build native Mac packages with `python scripts/build_macos.py --output dist/macos --dmg` on the intended Mac architecture. The macOS CI matrix runs the regression suite, builds both architectures, then exercises the frozen service, PDF preparation, extension pairing, and a visible Cocoa dashboard with native menu closure. See [Mac build details](macos.md#build-and-verify).
+
+Build the Chrome ZIP with `python scripts/package_extension.py`. The archive contains only the runtime allowlist. Load its extracted folder through `chrome://extensions` to use or inspect it; there is no compilation step.
 
 Contribution and disclosure procedures are in [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).

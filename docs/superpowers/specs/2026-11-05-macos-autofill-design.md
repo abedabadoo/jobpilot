@@ -33,13 +33,13 @@ Build a Manifest V3 extension using local HTML/CSS/JavaScript. Clicking Autofill
 
 ## Pairing contract
 
-All extension routes are under /api/extension/. Existing dashboard origin and mutation-token checks remain unchanged for every other route. The extension never gets the dashboard token or /api/state/settings/email data.
+All extension routes are under /api/extension/. Existing dashboard origin and mutation-token checks remain, with additional Fetch Metadata denial for originless cross-context browser fetches. The extension never gets the dashboard token or /api/state/settings/email data.
 
 1. POST /api/extension/pairing, dashboard token, body {extension_id}: generates one-use code bound to exact chrome-extension://id, expires in five minutes.
 2. POST /api/extension/pair, matching extension Origin, body {code}: consumes code and returns independent bearer token, pairing_id, expires_at. Store token digest, not plaintext.
-3. GET /api/extension/profile, bearer and matching Origin: {schema_version:1, profile:{...}}. Recursive explicit allowlist; no generic settings or saved-answer export.
-4. GET /api/extension/documents, same auth: {documents:[{job_id,title,company,kind,name,download_path}]}. Supported kinds resume_pdf/resume_docx/cover_pdf/cover_docx. No absolute filesystem paths.
-5. GET /api/extension/documents/{job_id}/{kind}, same auth: authenticated attachment restricted to DATA/applications and stored job document keys. Reject traversal/symlink escapes and oversized files.
+3. POST /api/extension/profile, bearer and matching Origin: {schema_version:1, profile:{...}}. Recursive explicit allowlist; no generic settings or saved-answer export.
+4. POST /api/extension/documents, same auth: {documents:[{job_id,title,company,kind,name,download_path}]}. Supported kinds resume_pdf/resume_docx/cover_pdf/cover_docx. No absolute filesystem paths.
+5. POST /api/extension/documents/{job_id}/{kind}, same auth: authenticated attachment restricted to DATA/applications and stored job document keys. Reject traversal/symlink escapes and oversized files. These protected read routes also support GET with an explicit matching Origin; Chrome uses POST so the browser supplies Origin automatically. Empty request bodies are accepted.
 6. GET /api/extension/pairings, dashboard token even though GET: active connection metadata only. POST /api/extension/pairings/{id}/revoke is dashboard-only. POST /api/extension/disconnect revokes the requesting extension's token.
 
 Chrome options' Connect button opens http://127.0.0.1:8765/?extension_id=<runtime-id>#settings. Dashboard prepopulates this ID but pairing requires a user click; it does not authorize from URL data alone. Copy the generated code into the extension. Extension profile import explicitly replaces the local profile after confirmation; failure preserves it. CORS is route-specific and exact-origin, never global wildcard. Unpaired website/null/extension origins cannot read protected data.
