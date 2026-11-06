@@ -86,7 +86,7 @@
   const ATTESTATION =
     /\b(attest|attests|attested|attesting|attestation|certify|certifies|certified|acknowledge|acknowledges|acknowledged|agree|agrees|agreed|accept|accepts|accepted)\b/;
   const OTHER_PERSON =
-    /\b(manager|supervisor|recruiter|parent|spouse|reference|referee|emergency contact)\b/;
+    /\b(managers?|supervisors?|recruiters?|parents?|spouses?|references?|referees?|emergency\s*contacts?)\b/;
   const AUTOCOMPLETE = {
     name: 'name',
     'given-name': 'first_name',

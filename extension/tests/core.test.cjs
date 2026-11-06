@@ -98,6 +98,14 @@ test('contact fields for supervisors and other people never use applicant facts'
     'Recruiter contact',
     'Emergency contact',
     'Reference 1',
+    'References',
+    'Referees',
+    'Supervisors',
+    'Managers',
+    'Recruiters',
+    'Parents',
+    'Spouses',
+    'Emergency contacts',
   ])
     for (const label of ['Name', 'Email address', 'Phone number'])
       assert.equal(core.inferField({ label, context }).key, null, `${context}: ${label}`);

@@ -300,6 +300,49 @@ def test_extension_skips_invisible_fields_and_other_people_but_fills_below_fold(
     assert page.locator("#below-fold").input_value() == PROFILE["email"]
 
 
+def test_extension_plural_third_party_sections_keep_applicant_contacts_blank(extension_browser):
+    _, options, page, tab, _ = extension_browser
+    contexts = [
+        "References",
+        "Referees",
+        "Supervisors",
+        "Managers",
+        "Recruiters",
+        "Parents",
+        "Spouses",
+        "Emergency contacts",
+    ]
+    page.evaluate(
+        """contexts => {
+      const section = document.createElement('section');
+      section.id='third-party-sections';
+      for (const context of contexts) {
+        const fieldset=document.createElement('fieldset');
+        const legend=document.createElement('legend'); legend.textContent=context;
+        fieldset.append(legend);
+        for (const labelText of ['Name','Email address','Phone number']) {
+          const label=document.createElement('label'); label.textContent=labelText;
+          label.append(document.createElement('input')); fieldset.append(label);
+        }
+        section.append(fieldset);
+      }
+      document.body.append(section);
+    }""",
+        contexts,
+    )
+    options.evaluate(
+        "p=>chrome.runtime.sendMessage({type:'saveProfile',profile:p})",
+        {**PROFILE, "name": "Ada Example"},
+    )
+    result = send(options, tab)
+    assert result["ok"]
+    assert page.locator("#email").input_value() == PROFILE["email"]
+    assert page.locator("#first").input_value() == "Ada"
+    assert page.locator("#third-party-sections input").evaluate_all(
+        'elements=>elements.every(element=>element.value === "")'
+    )
+
+
 def test_extension_popup_and_options_are_readable_and_keyboard_labelled(extension_browser):
     context, options, _, _, _ = extension_browser
     errors = []
