@@ -5,6 +5,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -346,8 +347,11 @@ def test_cors_preflight_is_exact_route_method_and_known_origin(api):
     assert response.status_code == 403
 
 
-def test_body_validation_and_pair_attempt_rate_limit(api):
+def test_body_validation_and_pair_attempt_rate_limit(api, monkeypatch):
     client, service = api
+    from jobpilot import autofill
+
+    monkeypatch.setattr(autofill, "time", SimpleNamespace(monotonic=lambda: 10.0))
     assert (
         client.post(
             "/api/extension/pairing", json={"extension_id": "not-an-id"}, headers=dashboard(service)
@@ -368,6 +372,34 @@ def test_body_validation_and_pair_attempt_rate_limit(api):
         for _ in range(12)
     ]
     assert 429 in results
+
+
+def test_pair_rate_limit_covers_rolling_minute_across_clock_bucket_boundary(api, monkeypatch):
+    client, service = api
+    from jobpilot import autofill
+
+    clock = [59.95]
+    monkeypatch.setattr(autofill, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    issue(client, service)
+    for _ in range(10):
+        response = client.post(
+            "/api/extension/pair", json={"code": "invalid"}, headers={"Origin": ORIGIN}
+        )
+        assert response.status_code == 403
+        clock[0] += 0.01
+    assert (
+        client.post(
+            "/api/extension/pair", json={"code": "invalid"}, headers={"Origin": ORIGIN}
+        ).status_code
+        == 429
+    )
+    clock[0] += 60
+    assert (
+        client.post(
+            "/api/extension/pair", json={"code": "invalid"}, headers={"Origin": ORIGIN}
+        ).status_code
+        == 403
+    )
 
 
 def test_documents_list_and_download_exclude_private_or_oversized_paths(api, tmp_path):

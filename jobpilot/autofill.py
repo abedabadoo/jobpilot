@@ -147,18 +147,24 @@ class ExtensionAPI:
 
     def _rate_allowed(self, request):
         now = time.monotonic()
-        window = int(now // 60)
+        cutoff = now - 60
         identity = request.headers.get("origin", "dashboard")
         pairing = request.url.path == PREFIX + "pair"
         with self.lock:
-            self.rates = {key: value for key, value in self.rates.items() if value[0] == window}
+            # A rolling minute prevents a burst from receiving a second quota
+            # just because the monotonic clock crossed a fixed minute boundary.
+            self.rates = {
+                key: [attempt for attempt in attempts if attempt > cutoff]
+                for key, attempts in self.rates.items()
+                if attempts and attempts[-1] > cutoff
+            }
             # Global cap also bounds memory when arbitrary extension IDs are sent.
             keys = [("all", 600), ((identity, pairing), 10 if pairing else 120)]
             for key, limit in keys:
-                if self.rates.get(key, (window, 0))[1] >= limit:
+                if len(self.rates.get(key, [])) >= limit:
                     return False
             for key, _ in keys:
-                self.rates[key] = (window, self.rates.get(key, (window, 0))[1] + 1)
+                self.rates.setdefault(key, []).append(now)
         return True
 
     def _authenticate(self, request):

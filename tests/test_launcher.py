@@ -49,6 +49,8 @@ def test_source_checkout_uses_the_current_python_interpreter(tmp_path, monkeypat
 
 def test_frozen_desktop_uses_its_installed_runtime(tmp_path, monkeypatch):
     launcher = launcher_module()
+    # This test exercises Windows path selection, not host executable discovery.
+    monkeypatch.setattr(launcher, "find_ollama", lambda: "")
     monkeypatch.setattr(launcher.sys, "platform", "win32")
     monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)

@@ -2,7 +2,7 @@ name: macOS application
 
 on:
   push:
-    branches: [main, codex/macos-autofill]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -33,14 +33,18 @@ jobs:
           python-version: '3.13'
           cache: pip
       - name: Install native dependencies
+        id: dependencies
         run: python -m pip install -e '.[dev,build]'
       - name: Install test browser
         run: python -m playwright install chromium
       - name: Run platform and service regression tests
         run: python -m pytest
       - name: Build distributable app and disk image
+        id: build
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: python scripts/build_macos.py --output dist/macos --dmg
       - name: Verify frozen service documents pairing and Cocoa dashboard
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: >-
           python scripts/smoke_macos.py
           --app dist/macos/macos-build/dist/JobPilot.app
