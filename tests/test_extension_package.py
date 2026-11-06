@@ -24,12 +24,14 @@ def test_extension_release_contains_runtime_only(tmp_path):
     (source / "connection.json").write_text('{"token":"private-token"}')
     (source / "fixtures").mkdir()
     (source / "fixtures/application.html").write_text("test-only permission fixture")
+    (source.parent / "LICENSE").write_text("MIT License fixture", encoding="utf-8")
 
     archive = module.package(source, tmp_path / "release")
     assert archive.name == "JobPilot-Autofill-1.2.3.zip"
     with zipfile.ZipFile(archive) as bundle:
         assert set(bundle.namelist()) == {
             f"JobPilot-Autofill/{name}" for name in module.RUNTIME_FILES
-        }
+        } | {"JobPilot-Autofill/LICENSE"}
+        assert bundle.read("JobPilot-Autofill/LICENSE") == b"MIT License fixture"
         assert json.loads(bundle.read("JobPilot-Autofill/manifest.json"))["version"] == "1.2.3"
         assert b"private" not in b"".join(bundle.read(name) for name in bundle.namelist())

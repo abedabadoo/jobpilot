@@ -31,11 +31,15 @@ def package(source: Path, output: Path) -> Path:
         path = source / name
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Missing or linked runtime file: {name}")
+    license_path = source.parent / "LICENSE"
+    if not license_path.is_file() or license_path.is_symlink():
+        raise ValueError("Missing repository license")
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f"JobPilot-Autofill-{version}.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for name in RUNTIME_FILES:
             bundle.write(source / name, f"JobPilot-Autofill/{name}")
+        bundle.write(license_path, "JobPilot-Autofill/LICENSE")
     return archive
 
 
