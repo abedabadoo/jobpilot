@@ -1099,6 +1099,51 @@ option {
 .settings-panel > .form-grid {
   padding: 0 24px 24px;
 }
+.extension-panel {
+  margin-top: 24px;
+}
+.extension-body {
+  padding: 0 24px 24px;
+}
+.extension-body > * + * {
+  margin-top: 16px;
+}
+.extension-manual summary {
+  cursor: pointer;
+  font-size: 14px;
+}
+.extension-manual label,
+.extension-code label {
+  display: block;
+  color: #fff;
+  font-size: 14px;
+  margin: 12px 0 8px;
+}
+.extension-manual input,
+.extension-code input {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+}
+.extension-actions,
+.extension-code-row,
+.extension-connection {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.extension-code-row input {
+  flex: 1;
+  min-width: 230px;
+}
+.extension-connection {
+  justify-content: space-between;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.extension-connection strong {
+  color: #fff;
+}
 .email-panel {
   margin-bottom: 22px;
 }

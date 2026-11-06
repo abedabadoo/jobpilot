@@ -1,0 +1,61 @@
+name: macOS application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-mac:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      JOBPILOT_TESTING: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install native dependencies
+        id: dependencies
+        run: python -m pip install -e '.[dev,build]'
+      - name: Install test browser
+        run: python -m playwright install chromium
+      - name: Run platform and service regression tests
+        run: python -m pytest
+      - name: Build distributable app and disk image
+        id: build
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: python scripts/build_macos.py --output dist/macos --dmg
+      - name: Verify frozen service documents pairing and Cocoa dashboard
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: >-
+          python scripts/smoke_macos.py
+          --app dist/macos/macos-build/dist/JobPilot.app
+          --report dist/macos/smoke.json --gui
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: JobPilot-macOS-${{ matrix.arch }}
+          path: |
+            dist/macos/*.app.zip
+            dist/macos/*.dmg
+            dist/macos/*.command
+            dist/macos/smoke.json
+          if-no-files-found: warn

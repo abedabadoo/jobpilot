@@ -25,17 +25,15 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .assets import asset_directory
+from .autofill import ExtensionAPI
 from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
 from .documents import local_endpoint, prepare
+from .platforms import SystemSleepInhibitor, application_data_dir
 from .remote_runtime import RemoteRuntime
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = Path(
-    os.environ.get(
-        "JOBPILOT_DATA_DIR", str(Path(os.environ.get("LOCALAPPDATA", ROOT)) / "JobPilot")
-    )
-).resolve()
+DATA = application_data_dir()
 DATA.mkdir(parents=True, exist_ok=True)
 store = Store(DATA / "jobpilot.sqlite")
 seed = json.loads((ROOT / "jobpilot/candidate.json").read_text(encoding="utf-8"))
@@ -82,6 +80,7 @@ if os.environ.get("JOBPILOT_DESKTOP_EXE"):
 TOKEN = store.get("_session_token") or secrets.token_urlsafe(32)
 store.set("_session_token", TOKEN)
 stop_event = threading.Event()
+sleep_inhibitor = SystemSleepInhibitor()
 remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
 search_requested = threading.Event()
 discovery_lock = threading.Lock()
@@ -752,6 +751,9 @@ def health_loop():
                 ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(power))
                 awake = conf["keep_awake"] and power.ACLineStatus == 1
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001 if awake else 0x80000000)
+            else:
+                sleep_inhibitor.set_enabled(bool(conf["keep_awake"]))
+                awake = bool(sleep_inhibitor.process and sleep_inhibitor.process.poll() is None)
             with httpx.Client(timeout=3, trust_env=False) as client:
                 tags = (
                     client.get(conf["ollama_url"].rstrip("/") + "/api/tags")
@@ -775,6 +777,7 @@ def health_loop():
         stop_event.wait(20)
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+    sleep_inhibitor.close()
 
 
 @asynccontextmanager
@@ -821,6 +824,7 @@ async def lifespan(app):
             remote_runtime.start_async()
     yield
     stop_event.set()
+    sleep_inhibitor.close()
     remote_runtime.stop()
 
 
@@ -828,12 +832,32 @@ app = FastAPI(title="JobPilot", lifespan=lifespan, docs_url=None, redoc_url=None
 app.add_middleware(
     TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"]
 )
+extension_api = ExtensionAPI(store, DATA, TOKEN)
+app.include_router(extension_api.router)
 
 
 @app.middleware("http")
 async def local_security(request: Request, call_next):
+    if request.url.path.startswith("/api/extension/"):
+        return await extension_api.security(request, call_next)
     origin = request.headers.get("origin")
-    if origin and urlsplit(origin).hostname not in ["127.0.0.1", "localhost", "::1", "testserver"]:
+    # Extension host permissions can omit Origin on GET. Browser-controlled
+    # Fetch Metadata still distinguishes those fetches from dashboard requests.
+    # CLI/native requests without these headers remain supported.
+    if (
+        request.url.path.startswith("/api/")
+        and not origin
+        and request.headers.get("sec-fetch-site") is not None
+        and request.headers.get("sec-fetch-site") != "same-origin"
+        and request.headers.get("sec-fetch-mode") != "navigate"
+    ):
+        return JSONResponse(
+            {"detail": "Only the local dashboard may access this service."}, status_code=403
+        )
+    if origin and (
+        urlsplit(origin).scheme == "chrome-extension"
+        or urlsplit(origin).hostname not in ["127.0.0.1", "localhost", "::1", "testserver"]
+    ):
         return JSONResponse(
             {"detail": "Only the local dashboard may access this service."}, status_code=403
         )

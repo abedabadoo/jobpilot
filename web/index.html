@@ -12,6 +12,7 @@
     />
     <link href="/style.css" rel="stylesheet" />
     <script defer="" src="/app.js"></script>
+    <script defer="" src="/extension-settings.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
@@ -475,7 +476,7 @@ Cloud Security Engineer"
             /></label>
             <div class="form-section-title full">
               <h2>Discovery &amp; startup</h2>
-              <p>Choose when searches run on this PC.</p>
+              <p>Choose when searches run on this computer.</p>
             </div>
             <label class="check-label"
               ><input name="search_enabled" type="checkbox" /><span
@@ -483,12 +484,10 @@ Cloud Security Engineer"
               ></label
             ><label class="check-label"
               ><input name="keep_awake" type="checkbox" /><span
-                >Keep PC awake while plugged in</span
+                >Keep computer awake while plugged in</span
               ></label
             ><label class="check-label"
-              ><input name="startup" type="checkbox" /><span
-                >Start JobPilot at Windows sign-in</span
-              ></label
+              ><input name="startup" type="checkbox" /><span>Start JobPilot at sign-in</span></label
             >
             <div class="form-footer full">
               <p class="form-note">
@@ -500,6 +499,64 @@ Cloud Security Engineer"
             </div>
           </div>
         </form>
+        <section
+          aria-labelledby="extensionHeading"
+          class="panel extension-panel"
+          id="extensionPanel"
+        >
+          <div class="panel-heading">
+            <div>
+              <h2 id="extensionHeading">Chrome autofill</h2>
+              <p>Use your profile and prepared documents in application forms in Chrome.</p>
+            </div>
+          </div>
+          <div class="extension-body">
+            <p class="form-note">
+              Open JobPilot Autofill in Chrome and choose <strong>Connect JobPilot</strong>. Then
+              create a pairing code here and paste it into the extension.
+            </p>
+            <p aria-live="polite" class="form-note" id="extensionConnectionStatus">
+              Open the extension to start a connection.
+            </p>
+            <details class="extension-manual">
+              <summary>Manual connection</summary>
+              <label for="extensionId">Extension ID</label>
+              <input
+                autocomplete="off"
+                id="extensionId"
+                maxlength="32"
+                pattern="[a-p]{32}"
+                spellcheck="false"
+              />
+            </details>
+            <div class="extension-actions">
+              <button class="button primary" disabled="" id="createExtensionPairing" type="button">
+                Create pairing code
+              </button>
+              <button class="button secondary" id="refreshExtensionConnections" type="button">
+                Refresh connections
+              </button>
+            </div>
+            <div class="extension-code" hidden="" id="extensionPairing">
+              <label for="extensionPairingCode">One-use pairing code</label>
+              <div class="extension-code-row">
+                <input
+                  autocomplete="off"
+                  id="extensionPairingCode"
+                  readonly=""
+                  spellcheck="false"
+                />
+                <button class="button secondary" id="copyExtensionCode" type="button">
+                  Copy code
+                </button>
+              </div>
+              <p class="form-note" id="extensionPairingHelp">
+                Paste this code into JobPilot Autofill in Chrome.
+              </p>
+            </div>
+            <div aria-live="polite" class="extension-connections" id="extensionConnections"></div>
+          </div>
+        </section>
       </section>
     </main>
     <dialog aria-labelledby="modalTitle" class="modal" id="modal">

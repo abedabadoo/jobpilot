@@ -1,10 +1,13 @@
 # Architecture
 
-JobPilot has a Windows desktop shell, a loopback API, and persistent search and document workers. The shell can exit while the workers continue.
+JobPilot has native Windows and macOS desktop shells, a loopback API, persistent search and document workers, and an optional Chrome autofill extension. The shell can exit while the workers continue.
 
 | Component | Responsibility |
 | --- | --- |
 | `launcher.py` | Start services, enforce one desktop window, provide tray controls and optional startup |
+| `jobpilot/platforms.py` | OS-specific data paths, startup, process discovery, singleton signaling and sleep control |
+| `jobpilot/autofill.py` | Scoped extension credentials, profile export and prepared-document access |
+| `extension/` | Editable offline profile, user-triggered form filling, resume attachment and undo |
 | `jobpilot/service.py` | Serve the dashboard, queue document work, expose manual application tracking and email controls |
 | `jobpilot/collectors.py` | Discover public postings, parse alerts, verify and read an inbox without modifying mail |
 | `jobpilot/keywords.py` | Extract role tools, disciplines, and phrases for the detail view and document tailoring |
@@ -29,6 +32,14 @@ Keyword extraction is independent of local model availability. Extracted terms a
 
 ## Storage and network
 
-`JOBPILOT_DATA_DIR` selects the data directory. Installed paths are recorded in `installed_paths.json`; an unconfigured source run uses `%LOCALAPPDATA%\JobPilot`. The directory includes SQLite state, application documents, logs, browser runtimes, and optional model files. Windows Credential Manager stores inbox credentials.
+`JOBPILOT_DATA_DIR` selects the data directory. Windows installed paths can be recorded in `installed_paths.json`; an unconfigured source run uses `%LOCALAPPDATA%\JobPilot` on Windows or `~/Library/Application Support/JobPilot` on Mac. The directory includes SQLite state, application documents, logs, browser runtimes, and optional model files. The system credential vault stores inbox credentials.
 
 The API listens on loopback port `8765`; local Ollama uses `11436`. Public searches, employer-page fetches, and encrypted inbox reads use external connections. Active assistant mode does not start a remote tunnel or submit forms.
+
+## Chrome connection
+
+The extension works independently from a saved Chrome-local profile. Its optional connection uses a five-minute, one-use code created in dashboard Settings, bound to the exact extension ID. The resulting independent bearer credential lasts up to 90 days; the service stores its digest, supports revocation, and requires the matching extension Origin on every protected request. It never exports the dashboard session token or general settings.
+
+Profile exports use a recursive field allowlist. Prepared documents are restricted to known PDF/Word keys under the application's document directory, with resolved-path checks and a 5 MiB limit. Protected reads have POST aliases because privileged Chrome GET fetches can omit Origin. Dashboard APIs reject originless cross-context browser requests using Fetch Metadata while allowing same-origin dashboard traffic and native local clients.
+
+The shipping MV3 manifest has `activeTab`, `scripting`, `storage`, and loopback-only host access. Profile storage and pairing credentials are restricted to trusted extension contexts. Explicit Autofill passes only the profile to an isolated filling engine in the chosen tab; explicit Attach additionally passes the selected resume. No page submission, background scanning of unrelated sites, or third-party profile service is involved.

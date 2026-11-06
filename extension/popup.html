@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JobPilot Autofill</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="popup">
+    <header>
+      <span class="eyebrow">JOBPILOT</span>
+      <h1>Your answers.<br />Your application.</h1>
+      <p>Fill this page, review it, then submit yourself.</p>
+    </header>
+    <main>
+      <p id="profile-summary" class="status">Loading local profile…</p>
+      <label class="check"
+        ><input id="replace" type="checkbox" /> Replace existing answers and files</label
+      >
+      <div class="actions">
+        <button id="fill" class="primary" type="button">Autofill this page</button
+        ><button id="undo" type="button">Undo last change</button>
+      </div>
+      <div class="resume-row">
+        <p id="resume-summary">No resume selected</p>
+        <button id="attach" type="button">Attach resume</button>
+      </div>
+      <p id="message" role="status" aria-live="polite"></p>
+      <section id="report" aria-label="Autofill results" hidden></section>
+      <p class="hint">
+        Existing answers are kept by default. Sensitive questions and consent stay yours to answer.
+      </p>
+    </main>
+    <footer>
+      <button id="settings" class="link" type="button">Profile &amp; settings</button
+      ><span>Works offline</span>
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>
