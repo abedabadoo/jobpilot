@@ -68,4 +68,6 @@ The output ZIP contains `JobPilot.app`. The installer is copied next to it. All 
 
 By default PyInstaller uses ad hoc signing. Set `JOBPILOT_CODESIGN_IDENTITY` to an installed Apple signing identity to request that identity during packaging. Apple Developer ID signing and notarization require real Apple credentials and are separate release steps. Do not label a build notarized unless it has actually passed Apple's notarization service and the ticket has been stapled and checked.
 
-CI uses native `macos-15` Apple Silicon and `macos-15-intel` Intel jobs. Native smoke tests must check the frozen executable's diagnostic command, bundled service child, health endpoint and dashboard assets. Mocked platform tests on Windows do not establish a working native Mac release.
+CI uses native `macos-15` Apple Silicon and `macos-15-intel` Intel jobs. Native smoke tests exercise the frozen executable's diagnostic command, bundled service child, PDF preparation, scoped extension API, and visible Cocoa dashboard. The packaged app opens its real window and closes through the native menu; the service must remain healthy afterward. Mocked platform tests on Windows do not establish a working native Mac release.
+
+To repeat those checks against a local bundle with disposable fictional data, run `python scripts/smoke_macos.py --app dist/macos/macos-build/dist/JobPilot.app --report dist/macos/smoke.json --gui` from the source checkout. This requires a logged-in Mac desktop with a WindowServer.

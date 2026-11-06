@@ -431,8 +431,40 @@ def main() -> int:
     parser.add_argument(
         "--diagnose", action="store_true", help="Report installation and service status"
     )
+    parser.add_argument(
+        "--verify-dashboard",
+        action="store_true",
+        help="Run an isolated native dashboard diagnostic",
+    )
+    parser.add_argument(
+        "--service-url", default=SERVICE_URL, help="Loopback URL for dashboard diagnostic"
+    )
+    parser.add_argument(
+        "--verify-timeout", type=float, default=45, help="Dashboard diagnostic deadline"
+    )
     parser.add_argument("--report", type=Path, help="Save command results as JSON")
     args = parser.parse_args()
+    if args.verify_dashboard:
+        if args.report is None:
+            parser.error("--verify-dashboard requires --report")
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            url = validate_loopback(args.service_url)
+            from jobpilot.desktop_check import verify_dashboard
+
+            result = verify_dashboard(
+                url=url,
+                report_path=args.report,
+                show_dashboard=show_dashboard,
+                instance_factory=PosixDesktopInstance,
+                timeout=args.verify_timeout,
+            )
+        except Exception as error:
+            result = {"ok": False, "loaded": False, "quit": False, "error": str(error)}
+        args.report.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        if sys.stdout:
+            print(json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
     paths = app_paths()
     data = Path(os.environ.get("JOBPILOT_DATA_DIR", paths["data"])).resolve()
     (data / "logs").mkdir(parents=True, exist_ok=True)

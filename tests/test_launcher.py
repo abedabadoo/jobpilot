@@ -253,3 +253,60 @@ def test_service_child_dispatches_before_desktop_initialization(monkeypatch):
     monkeypatch.setattr(launcher, "app_paths", lambda: pytest.fail("desktop initialized"))
     assert launcher.main() == 0
     assert captured == [["--port", "8765"]]
+
+
+def test_dashboard_verification_dispatches_without_initializing_user_profile(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    launcher = launcher_module()
+    report = tmp_path / "gui.json"
+    captured = {}
+
+    def verify_dashboard(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "loaded": True, "quit": True}
+
+    monkeypatch.setitem(
+        sys.modules, "jobpilot.desktop_check", SimpleNamespace(verify_dashboard=verify_dashboard)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "JobPilot",
+            "--verify-dashboard",
+            "--service-url",
+            "http://127.0.0.1:54321",
+            "--report",
+            str(report),
+        ],
+    )
+    monkeypatch.setattr(launcher, "app_paths", lambda: pytest.fail("user profile initialized"))
+    monkeypatch.setattr(launcher, "ensure_services", lambda *args: pytest.fail("services started"))
+    assert launcher.main() == 0
+    assert captured["url"] == "http://127.0.0.1:54321"
+    assert captured["show_dashboard"] is launcher.show_dashboard
+    assert captured["instance_factory"] is launcher.PosixDesktopInstance
+    assert json.loads(report.read_text())["ok"] is True
+
+
+def test_dashboard_verification_rejects_nonloopback_before_opening_ui(tmp_path, monkeypatch):
+    launcher = launcher_module()
+    report = tmp_path / "gui.json"
+    monkeypatch.setattr(
+        launcher.sys,
+        "argv",
+        [
+            "JobPilot",
+            "--verify-dashboard",
+            "--service-url",
+            "http://example.com",
+            "--report",
+            str(report),
+        ],
+    )
+    monkeypatch.setattr(launcher, "app_paths", lambda: pytest.fail("user profile initialized"))
+    monkeypatch.setattr(launcher, "show_dashboard", lambda *args: pytest.fail("dashboard opened"))
+    assert launcher.main() == 1
+    assert "loopback" in json.loads(report.read_text())["error"]

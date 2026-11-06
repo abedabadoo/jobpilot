@@ -122,23 +122,26 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                 }
                 if gui:
                     gui_report = temporary / "cocoa.json"
-                    subprocess.run(
+                    gui_process = subprocess.run(
                         [
-                            sys.executable,
-                            str(Path(__file__).with_name("smoke_macos_gui.py")),
-                            "--url",
+                            str(binary),
+                            "--verify-dashboard",
+                            "--service-url",
                             base,
                             "--report",
                             str(gui_report),
-                            "--timeout",
+                            "--verify-timeout",
                             "45",
                         ],
                         env=env,
-                        check=True,
+                        check=False,
                         timeout=65,
                     )
-                    result["gui"] = json.loads(gui_report.read_text())
+                    if gui_report.is_file():
+                        result["gui"] = json.loads(gui_report.read_text())
+                    gui_process.check_returncode()
                     assert result["gui"].get("ok") is True
+                    assert result["gui"].get("frozen") is True
                     assert request("/api/health")["ok"] is True
                 return result
             finally:
