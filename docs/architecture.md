@@ -10,6 +10,7 @@ JobPilot has a Windows desktop shell, a loopback API, and persistent search and 
 | `jobpilot/keywords.py` | Extract role tools, disciplines, and phrases for the detail view and document tailoring |
 | `jobpilot/core.py` | Assess role and location eligibility and calculate fit |
 | `jobpilot/documents.py` | Rank saved experience and render tailored PDF and Word application documents |
+| `jobpilot/resumeforge_bridge.py` | Create separate ResumeForge role workspaces and verify checked PDFs before attachment |
 | `jobpilot/links.py` | Open specific job URLs in the default browser without waiting for the worker |
 | `jobpilot/store.py` | Persist jobs, applied history, settings, problems, and removal exclusions in SQLite |
 | `web/` | Opportunities, Applied, Problems, profile, email, and preferences interface |
@@ -26,6 +27,8 @@ Problems have a readable message, category, optional role and employer, and the 
 ## Documents
 
 Keyword extraction is independent of local model availability. Extracted terms appear in the role detail and tailor the skills and cover-letter draft. Saved historical achievements remain tied to the profile. PDF and Word exports share the document structure; the renderer uses readable type sizes and allows another page when the content needs it.
+
+ResumeForge handoff uses its installed native editor's existing `--data-dir` argument. JobPilot seeds a role workspace from the saved ResumeForge profile and settings, then reads only the latest run. A checked PDF is copied into JobPilot's application directory after its report marks the run ready, geometry and content checks pass, and its SHA-256 matches. This path leaves both renderers unchanged and never changes the role's applied status.
 
 ## Storage and network
 

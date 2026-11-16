@@ -33,6 +33,12 @@ Document generation does not submit an application. Review and edit the exports 
 
 In a role's **Review** window, **Open** launches the PDF or Word file in your usual document app. **Download** saves a separate copy. The desktop window supports a save dialog; browser downloads use the browser's normal download settings.
 
+### ResumeForge handoff
+
+Install and save your profile in [ResumeForge](https://github.com/abedabadoo/resumeforge). From a JobPilot opportunity, choose **Open in ResumeForge**. The desktop editor opens that posting and its keywords in a separate workspace, with your saved ResumeForge profile and model settings. Edit and build the resume there. When its PDF passes ResumeForge's checks, return to JobPilot and choose **Use checked PDF**. The role then lists a separate **ResumeForge PDF** beside its existing resume and cover letters.
+
+Reopening a role keeps its ResumeForge edits. A changed posting starts a new workspace and leaves the earlier draft alone. JobPilot never overwrites ResumeForge's main workspace. The two apps use separate Python processes, so neither PDF engine or its dependencies change.
+
 ## Gmail and email alerts
 
 The Email workspace supports a read-only inbox connection, **Connect & test**, and **Sync now**, with the last check time, messages checked, job links found, and import counts. Credentials stay in Windows Credential Manager. Reading uses a read-only mailbox and `BODY.PEEK`, so messages are not marked read. A scan limit and date window keep each sync bounded; the interface reports when more messages exist than were checked.

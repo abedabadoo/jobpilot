@@ -1,0 +1,238 @@
+import hashlib
+import importlib
+import json
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from test_resumeforge_bridge import master_draft, run_result
+
+
+@pytest.fixture
+def integration(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path / "jobpilot-data"))
+    monkeypatch.setenv("JOBPILOT_TESTING", "1")
+    import jobpilot.service as service
+
+    service = importlib.reload(service)
+    master = tmp_path / "resumeforge-master"
+    master_draft(master)
+    monkeypatch.setattr(service.resumeforge_bridge, "master_workspace", lambda: master)
+    executable = tmp_path / "ResumeForge.exe"
+    executable.write_bytes(b"app")
+    monkeypatch.setattr(service.resumeforge_bridge, "desktop_executable", lambda: executable)
+    opened = []
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "open_editor",
+        lambda app, workspace: opened.append((app, workspace)),
+    )
+    client = TestClient(service.app)
+    headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}
+    job = service.store.add_job(
+        {
+            "url": "https://jobs.example.com/42",
+            "title": "Operations Specialist",
+            "company": "Example Games",
+            "description": "Monitor cloud services and respond to production incidents.",
+            "status": "needs_review",
+            "fit": 81,
+            "note": "Original review note",
+            "documents": {"resume_pdf": "existing.pdf", "cover_pdf": "cover.pdf"},
+            "application": {"documents": {"resume_pdf": "existing.pdf"}},
+        }
+    )
+    return service, client, headers, job, master, opened
+
+
+def test_open_role_requires_session_and_preserves_master_workspace(integration):
+    service, client, headers, job, master, opened = integration
+    url = f"/api/jobs/{job['id']}/resumeforge/open"
+    assert client.post(url, json={}).status_code == 403
+    before = (master / "draft.json").read_bytes()
+    response = client.post(url, json={}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["opened"] is True
+    assert len(opened) == 1
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    assert opened[0][1] == workspace
+    assert (workspace / "draft.json").is_file()
+    assert (master / "draft.json").read_bytes() == before
+    assert service.store.get_job(job["id"])["status"] == "needs_review"
+
+
+def test_status_and_use_attach_only_checked_pdf_without_changing_tracking(integration):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    assert client.get(base + "/status").json()["status"] == "not_built"
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_id = "a" * 32
+    run_result(workspace, run_id)
+    assert client.get(base + "/status").json()["status"] == "ready"
+    assert client.post(base + "/use", json={}).status_code == 403
+    first = client.post(base + "/use", json={}, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["attached"] is True
+    saved = service.store.get_job(job["id"])
+    assert saved["status"] == "needs_review"
+    assert saved["note"] == "Original review note"
+    assert saved.get("applied") is not True
+    assert saved["documents"]["resume_pdf"] == "existing.pdf"
+    assert saved["documents"]["cover_pdf"] == "cover.pdf"
+    pdf = saved["documents"]["resumeforge_pdf"]
+    assert pdf.startswith(str(service.DATA / "applications"))
+    assert hashlib.sha256(open(pdf, "rb").read()).hexdigest() == saved["resumeforge"]["sha256"]
+    assert saved["application"]["documents"]["resumeforge_pdf"] == pdf
+    download = client.get("/api/artifact", params={"path": pdf})
+    assert download.status_code == 200
+    assert download.content.startswith(b"%PDF-")
+    second = client.post(base + "/use", json={}, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["already_attached"] is True
+    assert service.store.get_job(job["id"])["documents"]["resumeforge_pdf"] == pdf
+
+
+def test_incomplete_or_changed_resume_cannot_attach(integration):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    folder = run_result(workspace, "b" * 32, status="needs_content")
+    response = client.post(base + "/use", json={}, headers=headers)
+    assert response.status_code == 409
+    assert "ready" in response.json()["detail"].lower()
+    result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+    result["status"] = "ready"
+    (folder / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    (folder / "resume.pdf").write_bytes(b"%PDF-1.4\ntampered")
+    response = client.post(base + "/use", json={}, headers=headers)
+    assert response.status_code == 409
+    assert service.store.get_job(job["id"])["documents"] == job["documents"]
+
+
+def test_missing_attached_copy_can_be_restored_from_checked_run(integration):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_result(workspace, "d" * 32)
+    assert client.post(base + "/use", json={}, headers=headers).status_code == 200
+    attached = service.store.get_job(job["id"])["documents"]["resumeforge_pdf"]
+    Path(attached).unlink()
+    assert client.get(base + "/status").json() == {"status": "ready", "attached": False}
+    restored = client.post(base + "/use", json={}, headers=headers)
+    assert restored.status_code == 200
+    assert Path(attached).is_file()
+
+
+def test_normal_document_regeneration_keeps_resumeforge_pdf(integration, monkeypatch):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_result(workspace, "c" * 32)
+    assert client.post(base + "/use", json={}, headers=headers).status_code == 200
+    path = service.store.get_job(job["id"])["documents"]["resumeforge_pdf"]
+    monkeypatch.setattr(
+        service,
+        "prepare",
+        lambda *args: {
+            "resume_pdf": "new-jobpilot.pdf",
+            "cover_pdf": "new-cover.pdf",
+            "generation_mode": "fixture",
+            "generation_note": "Fixture documents",
+        },
+    )
+    service.prepare_job(job["id"])
+    saved = service.store.get_job(job["id"])
+    assert saved["documents"]["resume_pdf"] == "new-jobpilot.pdf"
+    assert saved["documents"]["resumeforge_pdf"] == path
+    assert saved["application"]["documents"]["resumeforge_pdf"] == path
+
+
+def test_tampered_attached_copy_is_not_treated_as_checked(integration):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_result(workspace, "e" * 32)
+    assert client.post(base + "/use", json={}, headers=headers).status_code == 200
+    attached = Path(service.store.get_job(job["id"])["documents"]["resumeforge_pdf"])
+    attached.write_bytes(b"%PDF-1.4\ntampered\n")
+    assert client.get(base + "/status").json() == {"status": "ready", "attached": False}
+    response = client.post(base + "/use", json={}, headers=headers)
+    assert response.status_code == 409
+    assert response.json()["detail"] != "ResumeForge PDF is already on this role."
+
+
+def test_import_preserves_receipt_added_during_pdf_verification(integration, monkeypatch):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_result(workspace, "f" * 32)
+    original = service.resumeforge_bridge.checked_run
+
+    def checked_run(path):
+        current = service.store.get_job(job["id"])
+        service.store.update_job(
+            job["id"], application={**current["application"], "receipt": "confirmed-123"}
+        )
+        return original(path)
+
+    monkeypatch.setattr(service.resumeforge_bridge, "checked_run", checked_run)
+    response = client.post(base + "/use", json={}, headers=headers)
+    assert response.status_code == 200
+    assert service.store.get_job(job["id"])["application"]["receipt"] == "confirmed-123"
+
+
+def test_import_rejects_redirected_application_folder(integration):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_result(workspace, "0" * 32)
+    outside = service.DATA.parent / "outside-applications"
+    outside.mkdir()
+    applications = service.DATA / "applications"
+    if applications.exists():
+        pytest.skip("Applications directory already exists")
+    try:
+        applications.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Creating symlinks is unavailable")
+    response = client.post(base + "/use", json={}, headers=headers)
+    assert response.status_code == 409
+    assert not list(outside.rglob("*.pdf"))
+
+
+def test_changed_posting_marks_older_resumeforge_document_outdated(integration):
+    service, client, headers, job, _, _ = integration
+    base = f"/api/jobs/{job['id']}/resumeforge"
+    client.post(base + "/open", json={}, headers=headers)
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    run_result(workspace, "4" * 32)
+    assert client.post(base + "/use", json={}, headers=headers).status_code == 200
+    assert client.get("/api/state").json()["jobs"][0]["resumeforge"]["current"] is True
+    service.store.update_job(job["id"], description="Revised posting with a different remit.")
+    assert client.get("/api/state").json()["jobs"][0]["resumeforge"]["current"] is False
+
+
+def test_regeneration_preserves_receipt_added_during_document_build(integration, monkeypatch):
+    service, _, _, job, _, _ = integration
+
+    def prepare(*_):
+        current = service.store.get_job(job["id"])
+        service.store.update_job(
+            job["id"], application={**current["application"], "receipt": "confirmed-456"}
+        )
+        return {
+            "resume_pdf": "new-jobpilot.pdf",
+            "generation_mode": "fixture",
+            "generation_note": "Fixture documents",
+        }
+
+    monkeypatch.setattr(service, "prepare", prepare)
+    service.prepare_job(job["id"])
+    assert service.store.get_job(job["id"])["application"]["receipt"] == "confirmed-456"

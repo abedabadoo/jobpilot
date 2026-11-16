@@ -53,6 +53,14 @@ The PyInstaller output contains the desktop launcher; installing also supplies t
 3. Use **Review** to inspect fit, job-description keywords, and tailored document exports.
 4. Open the job in your usual browser and apply there. Click **Applied?** when finished; the role moves to Applied.
 
+### Using ResumeForge for a role
+
+Install the [ResumeForge desktop app](https://github.com/abedabadoo/resumeforge) and save your source profile there first. In JobPilot, open a role with a full description and select **Open in ResumeForge**. JobPilot launches the installed editor with that role's posting and keywords already loaded. The editor uses a separate workspace for this role and copies your saved ResumeForge profile and model settings into it the first time you open it.
+
+Analyze, edit, and build the resume in ResumeForge. Return to JobPilot's role details. When the status says **Checked PDF ready**, select **Use checked PDF**. The PDF appears as **ResumeForge PDF** with Open and Download controls. JobPilot keeps its own resume and cover-letter files as separate documents. If ResumeForge says the draft needs content or review, finish those checks there before importing it.
+
+Reopening the same posting keeps edits in its role workspace. If the posting changes, JobPilot opens a fresh workspace. Your main ResumeForge workspace remains intact. The ResumeForge app runs independently; JobPilot does not require its browser server or a shared Python environment.
+
 Closing the desktop window hides it to the tray. **Quit dashboard** leaves the worker running. **Stop worker** stops background work without deleting the queue. Windows sign-in startup is available after installation, through Preferences. The installed recovery task checks every five minutes and at sign-in, and starts services only when the saved startup setting is enabled. Automatic submission and remote access remain disabled in assistant mode, even when older saved preferences enabled them.
 
 ## Email alerts
