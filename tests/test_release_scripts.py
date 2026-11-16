@@ -1,3 +1,4 @@
+import importlib.util
 import shutil
 import subprocess
 from pathlib import Path
@@ -48,3 +49,59 @@ exit 0
     assert (tmp_path / "build" / "desktop-dist" / "JobPilot" / "JobPilot.exe").is_file()
     assert not (source / "JobPilot.exe").exists()
     assert not (source / "_internal").exists()
+
+
+def mac_builder():
+    path = Path(__file__).resolve().parents[1] / "scripts/build_macos.py"
+    spec = importlib.util.spec_from_file_location("mac_builder", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_mac_builder_collects_service_native_keychain_and_fictional_assets(tmp_path):
+    builder = mac_builder()
+    source = Path(__file__).resolve().parents[1]
+    command = builder.build_command(source, tmp_path / "dist", tmp_path / "work")
+    assert command[:3] == [builder.sys.executable, "-m", "PyInstaller"]
+    assert "jobpilot.service" in command
+    assert "keyring.backends.macOS" in command
+    assert "webview.platforms.cocoa" in command
+    assert "--windowed" in command
+    assert "--osx-bundle-identifier" in command
+    for asset in ["web", "remote_web", "jobpilot/candidate.json"]:
+        assert any(str(source / asset) in item for item in command)
+    assert not any("data/" in item or "installed_paths.json" in item for item in command)
+    assert "--distpath" in command and str(tmp_path / "dist") in command
+
+
+def test_mac_builder_archives_app_with_ditto_and_no_python_runtime_dependency(
+    tmp_path, monkeypatch
+):
+    builder = mac_builder()
+    monkeypatch.setattr(builder.sys, "platform", "darwin")
+    monkeypatch.setattr(builder.platform, "machine", lambda: "arm64")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if "PyInstaller" in command:
+            dist = Path(command[command.index("--distpath") + 1])
+            (dist / "JobPilot.app/Contents/MacOS").mkdir(parents=True)
+            (dist / "JobPilot.app/Contents/MacOS/JobPilot").write_text("frozen fixture")
+        elif command[0] == "ditto":
+            Path(command[-1]).touch()
+
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    archive = builder.build(tmp_path / "release")
+    assert archive == tmp_path / "release/JobPilot-arm64.app.zip"
+    assert archive.is_file()
+    assert any(command[:4] == ["ditto", "-c", "-k", "--sequesterRsrc"] for command in calls)
+    assert not any("pip" in command for command in calls)
+
+
+def test_mac_builder_rejects_cross_platform_packaging(tmp_path, monkeypatch):
+    builder = mac_builder()
+    monkeypatch.setattr(builder.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match="macOS"):
+        builder.build(tmp_path)

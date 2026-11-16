@@ -4,7 +4,8 @@ include package.json package-lock.json .prettierrc.json
 recursive-include web *.html *.css *.js
 recursive-include remote_web *.html *.css *.js *.webmanifest *.svg *.png
 recursive-include assets *.ico
-recursive-include scripts *.py *.ps1
+recursive-include scripts *.py *.ps1 *.command
+recursive-include extension *.json *.html *.css *.js *.cjs *.md
 recursive-include docs *.md *.png
 recursive-include tests *.py
 global-exclude __pycache__ *.py[cod]

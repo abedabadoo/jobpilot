@@ -6,7 +6,7 @@ The MIT license in this repository covers JobPilot's first-party source. Depende
 | --- | --- | --- |
 | FastAPI and Uvicorn | Local HTTP services | [FastAPI](https://github.com/fastapi/fastapi), [Uvicorn](https://github.com/encode/uvicorn) |
 | Playwright | Browser automation and fixture tests | [Microsoft Playwright](https://github.com/microsoft/playwright-python) |
-| pywebview and pystray | Windows window and system tray | [pywebview](https://github.com/r0x0r/pywebview), [pystray](https://github.com/moses-palmer/pystray) |
+| pywebview, PyObjC and pystray | Native desktop windows, Cocoa bridge and Windows system tray | [pywebview](https://github.com/r0x0r/pywebview), [PyObjC](https://github.com/ronaldoussoren/pyobjc), [pystray](https://github.com/moses-palmer/pystray) |
 | JobSpy | Job-board discovery | [JobSpy](https://github.com/speedyapply/JobSpy) |
 | ReportLab and python-docx | Application document export | [ReportLab](https://www.reportlab.com/), [python-docx](https://github.com/python-openxml/python-docx) |
 | keyring | OS credential storage | [keyring](https://github.com/jaraco/keyring) |

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "profile": {
+    "name": "Ada Example",
+    "first_name": "Ada",
+    "last_name": "Example",
+    "email": "ada@example.test",
+    "phone": "+1 202 555 0142",
+    "city": "Exampleville",
+    "country": "United States",
+    "work_authorized": null,
+    "requires_sponsorship": null,
+    "willing_to_relocate": null,
+    "skills": ["Python", "Documentation"],
+    "experience": [
+      {
+        "company": "Fictional Company",
+        "title": "Engineer",
+        "start": "2021-01",
+        "end": "2024-12",
+        "description": "Built fictional tools for this sample profile."
+      }
+    ],
+    "education": [
+      {
+        "institution": "Fictional College",
+        "degree": "BS",
+        "field_of_study": "Computer Science",
+        "start": "2017-08",
+        "end": "2021-05"
+      }
+    ]
+  }
+}
