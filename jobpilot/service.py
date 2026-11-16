@@ -8,12 +8,14 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -23,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import __version__
+from . import __version__, resumeforge_bridge
 from .assets import asset_directory
 from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
 from .documents import local_endpoint, prepare
@@ -142,7 +144,7 @@ def report_error(message, *, category="worker", job=None, detail=None, url=None)
     return store.add_problem(friendly, category=category, job=job, url=url)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=2048)
 def _cached_job_keywords(title, description, profile_json):
     from .keywords import extract_keywords
 
@@ -457,20 +459,27 @@ def prepare_job(job_id, preserve_review=False):
                 if job.get("applied") or prior_status == "applied"
                 else ("needs_review" if preserve_review else "prepared")
             )
-            job = store.update_job(
-                job_id,
-                status=final_status,
-                documents=documents,
-                application={
-                    **(job.get("application") or {}),
-                    "documents": documents,
-                    "status": final_status,
-                    "note": documents["generation_note"],
-                },
-                note=review_note + " Application documents ready. " + documents["generation_note"],
-                preparation_prior_status=None,
-                preparation_prior_note=None,
-            )
+            with store.lock:
+                current = store.get_job(job_id) or {}
+                current_documents = current.get("documents") or {}
+                if current_documents.get("resumeforge_pdf"):
+                    documents["resumeforge_pdf"] = current_documents["resumeforge_pdf"]
+                job = store.update_job(
+                    job_id,
+                    status=final_status,
+                    documents=documents,
+                    application={
+                        **(current.get("application") or {}),
+                        "documents": documents,
+                        "status": final_status,
+                        "note": documents["generation_note"],
+                    },
+                    note=review_note
+                    + " Application documents ready. "
+                    + documents["generation_note"],
+                    preparation_prior_status=None,
+                    preparation_prior_note=None,
+                )
             store.event(
                 f"Prepared {job['title']} at {job.get('company', '')} using {documents['generation_mode']} selection."
             )
@@ -862,7 +871,17 @@ def session():
 def state():
     profile = store.get("profile")
     profile_json = json.dumps(profile, sort_keys=True, ensure_ascii=False)
-    jobs = [{**job, "keywords": job_keywords(job, profile_json)} for job in store.jobs()]
+    jobs = []
+    for job in store.jobs():
+        current = {**job, "keywords": job_keywords(job, profile_json)}
+        forge = job.get("resumeforge")
+        if isinstance(forge, dict):
+            try:
+                active = forge.get("workspace") == resumeforge_bridge.workspace_path(DATA, job).name
+            except ValueError:
+                active = False
+            current["resumeforge"] = {**forge, "current": active}
+        jobs.append(current)
     return {
         "metrics": store.metrics(),
         "worker": dict(worker),
@@ -1550,6 +1569,130 @@ def prepare_action(job_id: int):
         return {"ok": True}
     finally:
         application_lock.release()
+
+
+@app.post("/api/jobs/{job_id}/resumeforge/open")
+def open_in_resumeforge(job_id: int):
+    job = require_job(job_id)
+    try:
+        executable = resumeforge_bridge.desktop_executable()
+        workspace = resumeforge_bridge.prepare_workspace(
+            DATA, {**job, "keywords": job_keywords(job)}
+        )
+        resumeforge_bridge.open_editor(executable, workspace)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            503, "ResumeForge could not open. Try launching it from Start."
+        ) from exc
+    return {"opened": True, "message": "Opened this opportunity in ResumeForge."}
+
+
+@app.get("/api/jobs/{job_id}/resumeforge/status")
+def resumeforge_status(job_id: int):
+    job = require_job(job_id)
+    try:
+        workspace = resumeforge_bridge.workspace_path(DATA, job)
+    except ValueError:
+        return {"status": "no_description", "attached": False}
+    try:
+        resumeforge_bridge.validate_workspace(DATA, workspace)
+    except ValueError:
+        return {"status": "invalid", "attached": False}
+    if not (workspace / "draft.json").is_file():
+        return {"status": "not_opened", "attached": False}
+    try:
+        result = resumeforge_bridge.checked_run(workspace)
+    except (OSError, ValueError):
+        return {"status": "invalid", "attached": False}
+    run_id = result.get("run_id")
+    attached_path = (job.get("documents") or {}).get("resumeforge_pdf")
+    attached = (
+        run_id is not None
+        and (job.get("resumeforge") or {}).get("run_id") == run_id
+        and isinstance(attached_path, str)
+        and resumeforge_bridge.checked_copy(attached_path, result.get("sha256", ""), DATA)
+    )
+    return {"status": result["status"], "attached": attached}
+
+
+@app.post("/api/jobs/{job_id}/resumeforge/use")
+@guard_job_mutation
+def use_resumeforge_pdf(job_id: int):
+    job = require_job(job_id)
+    try:
+        workspace = resumeforge_bridge.workspace_path(DATA, job)
+        resumeforge_bridge.validate_workspace(DATA, workspace)
+        result = resumeforge_bridge.checked_run(workspace)
+    except FileNotFoundError as exc:
+        raise HTTPException(409, "Open this role in ResumeForge and build a resume first.") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if result["status"] != "ready":
+        raise HTTPException(
+            409, "The latest ResumeForge resume is not ready. Finish its checks there first."
+        )
+    existing = job.get("resumeforge") or {}
+    if existing.get("run_id") == result["run_id"] and existing.get("sha256") == result["sha256"]:
+        path = (job.get("documents") or {}).get("resumeforge_pdf")
+        if path and resumeforge_bridge.checked_copy(path, result["sha256"], DATA):
+            return {
+                "attached": True,
+                "already_attached": True,
+                "message": "ResumeForge PDF is already on this role.",
+            }
+
+    folder = DATA / "applications" / f"resumeforge-job-{job_id}-{result['run_id']}"
+    try:
+        resumeforge_bridge.validate_import_directory(DATA, folder)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / "resume.pdf"
+    if destination.is_symlink():
+        raise HTTPException(409, "The ResumeForge PDF destination is redirected.")
+    if destination.is_file():
+        if sha256(destination.read_bytes()).hexdigest() != result["sha256"]:
+            raise HTTPException(409, "The existing ResumeForge copy differs from its checked run.")
+    else:
+        temporary = folder / f".resume-{secrets.token_hex(8)}.pdf"
+        try:
+            shutil.copyfile(result["pdf"], temporary)
+            if sha256(temporary.read_bytes()).hexdigest() != result["sha256"]:
+                raise HTTPException(409, "The ResumeForge PDF changed while it was being imported.")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    with store.lock:
+        current = store.get_job(job_id)
+        if current is None:
+            raise HTTPException(404, "This opportunity is no longer available.")
+        application = dict(current.get("application") or {})
+        documents = {
+            **(application.get("documents") or {}),
+            **(current.get("documents") or {}),
+            "resumeforge_pdf": str(destination),
+        }
+        application["documents"] = documents
+        store.update_job(
+            job_id,
+            documents=documents,
+            application=application,
+            resumeforge={
+                "run_id": result["run_id"],
+                "sha256": result["sha256"],
+                "workspace": workspace.name,
+                "attached_at": store.now(),
+            },
+        )
+    store.event(f"Added a checked ResumeForge PDF for {job['title']} at {job['company']}.")
+    return {
+        "attached": True,
+        "already_attached": False,
+        "message": "Checked ResumeForge PDF added to this role.",
+    }
 
 
 @app.post("/api/jobs/{job_id}/retry")

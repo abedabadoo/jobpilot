@@ -83,3 +83,15 @@ def test_state_loads_one_profile_snapshot_for_all_jobs(state_api, monkeypatch):
     assert response.status_code == 200
     assert len(response.json()["jobs"]) == 5
     assert len(reads) == 1
+
+
+def test_keyword_cache_reuses_large_opportunity_list(state_api):
+    service, _, calls = state_api
+    profile_json = "{}"
+    jobs = [
+        {"title": "Security Engineer", "description": f"Posting {number}"} for number in range(600)
+    ]
+    for _ in range(2):
+        for job in jobs:
+            service.job_keywords(job, profile_json)
+    assert len(calls) == len(jobs)

@@ -339,6 +339,7 @@
   }
   function documentEntries(job) {
     const names = {
+      resumeforge_pdf: 'ResumeForge PDF',
       resume_pdf: 'Resume PDF',
       resume_docx: 'Resume Word',
       cover_pdf: 'Cover letter PDF',
@@ -346,7 +347,8 @@
     };
     return artifactEntries(job.documents || job.application?.documents)
       .filter(
-        ([, path]) =>
+        ([key, path]) =>
+          (key !== 'resumeforge_pdf' || job.resumeforge?.current !== false) &&
           typeof path === 'string' &&
           /^(?:[A-Za-z]:[\\/]|\/)/.test(path) &&
           /\.(?:pdf|docx)$/i.test(path),
@@ -1386,7 +1388,83 @@
       if (result) showJob(job.id);
     });
     docs.append(prepare);
+    const forge = el('div', 'resumeforge-section');
+    forge.append(
+      el('h3', '', 'ResumeForge'),
+      el(
+        'p',
+        'modal-note',
+        'Edit this posting with your saved ResumeForge profile. Add its checked PDF here when it is ready.',
+      ),
+    );
+    const forgeControls = el('div', 'detail-links'),
+      forgeOpen = button('Open in ResumeForge', 'secondary', 'external'),
+      forgeUse = button('Use checked PDF', 'secondary', 'file'),
+      forgeStatus = el('p', 'modal-note', 'Checking ResumeForge…');
+    let forgeRefreshTimer;
+    forgeUse.disabled = true;
+    forgeOpen.addEventListener('click', async () => {
+      const result = await action(
+        forgeOpen,
+        `/api/jobs/${encodeURIComponent(job.id)}/resumeforge/open`,
+        {},
+        'Opened this opportunity in ResumeForge.',
+      );
+      if (result && forge.isConnected) refreshForge();
+    });
+    forgeUse.addEventListener('click', async () => {
+      const result = await action(
+        forgeUse,
+        `/api/jobs/${encodeURIComponent(job.id)}/resumeforge/use`,
+        {},
+        'Checked ResumeForge PDF added to this role.',
+      );
+      if (result && selectedJob === job.id && $('modal').open) showJob(job.id);
+    });
+    forgeControls.append(forgeOpen, forgeUse);
+    forge.append(forgeControls, forgeStatus);
+    docs.append(forge);
     content.append(docs);
+    async function refreshForge() {
+      try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/resumeforge/status`, {
+          cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('ResumeForge status is unavailable.');
+        const result = await response.json();
+        if (!forge.isConnected || selectedJob !== job.id) return;
+        const messages = {
+          no_description: 'Add the full posting before opening it in ResumeForge.',
+          not_opened: 'Open this role in ResumeForge to start.',
+          not_built: 'Build and review the resume in ResumeForge, then return here.',
+          building: 'ResumeForge is building the resume.',
+          unknown: 'This build has no result yet. Check ResumeForge and rebuild if it stopped.',
+          outdated:
+            'The ResumeForge draft changed after this build. Build it again before importing.',
+          needs_content: 'ResumeForge needs more content before this PDF can be used.',
+          needs_review: 'ResumeForge found content to review before this PDF can be used.',
+          failed: 'The latest ResumeForge build did not finish. Try again there.',
+          invalid: 'JobPilot could not verify the latest ResumeForge PDF.',
+          ready: result.attached
+            ? 'ResumeForge PDF is already available with this role.'
+            : 'Checked PDF ready. Choose Use checked PDF to add it to this role.',
+        };
+        forgeStatus.textContent = messages[result.status] || 'ResumeForge status is unavailable.';
+        forgeUse.disabled = result.status !== 'ready' || Boolean(result.attached);
+      } catch (_) {
+        if (forge.isConnected) {
+          forgeStatus.textContent =
+            'JobPilot could not check ResumeForge. Reopen this role to retry.';
+          forgeUse.disabled = true;
+        }
+      } finally {
+        if (forge.isConnected && $('modal').open && selectedJob === job.id) {
+          clearTimeout(forgeRefreshTimer);
+          forgeRefreshTimer = setTimeout(refreshForge, 5000);
+        }
+      }
+    }
+    refreshForge();
     const description = el('section', 'detail-section');
     description.append(
       el('h3', '', 'Job description'),
