@@ -159,6 +159,7 @@ def test_dashboard_allows_document_downloads_before_creating_webview(tmp_path, m
 
     def create_window(*args, **kwargs):
         captured.update(webview.settings)
+        captured["window"] = kwargs
         raise WindowReady
 
     monkeypatch.setattr(webview, "create_window", create_window)
@@ -166,6 +167,14 @@ def test_dashboard_allows_document_downloads_before_creating_webview(tmp_path, m
         launcher.show_dashboard(False, tmp_path, None)
     assert captured["ALLOW_DOWNLOADS"] is True
     assert captured["OPEN_EXTERNAL_LINKS_IN_BROWSER"] is True
+    assert captured["window"]["min_size"][0] <= 900
+    if launcher.sys.platform == "win32":
+        from ctypes import windll
+
+        screen_width = windll.user32.GetSystemMetrics(0)
+        screen_height = windll.user32.GetSystemMetrics(1)
+        assert captured["window"]["width"] <= max(600, screen_width - 40)
+        assert captured["window"]["height"] <= max(590, screen_height - 40)
 
 
 def test_mac_source_paths_work_without_windows_environment(tmp_path, monkeypatch):

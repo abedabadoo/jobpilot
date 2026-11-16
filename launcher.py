@@ -285,12 +285,21 @@ def show_dashboard(background: bool, data: Path, instance: DesktopInstance) -> N
     state = {"quitting": False}
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
     webview.settings["ALLOW_DOWNLOADS"] = True
+    width, height = 1380, 900
+    if sys.platform == "win32":
+        screen = ctypes.WinDLL("user32", use_last_error=True)
+        screen_width = screen.GetSystemMetrics(0)
+        screen_height = screen.GetSystemMetrics(1)
+        if screen_width > 0:
+            width = min(width, max(600, screen_width - 80))
+        if screen_height > 0:
+            height = min(1180, max(590, screen_height - 80))
     window = webview.create_window(
         "JobPilot",
         SERVICE_URL,
-        width=1380,
-        height=900,
-        min_size=(1000, 650),
+        width=width,
+        height=height,
+        min_size=(600, 590),
         hidden=background,
         background_color="#10151E",
         text_select=True,
