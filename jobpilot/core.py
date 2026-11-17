@@ -168,7 +168,10 @@ def role_assessment(job, profile, settings):
         )
     security = re.search(r"\b(security|cybersecurity|cyber|infosec|grc|compliance)\b", title)
     ordinary = security and re.search(
-        r"\b(engineer|analyst|specialist|auditor|researcher|consultant)\b", title
+        r"\b(engineer|analyst|specialist|auditor|researcher|consultant|advisor)\b", title
+    )
+    security_operations = re.search(r"\b(soc|incident response)\b", title) and re.search(
+        r"\b(engineer|analyst|specialist)\b", title
     )
     configured = " ".join(_normal_title(target) for target in targets)
     platform_role = (
@@ -186,7 +189,7 @@ def role_assessment(job, profile, settings):
             and re.search(r"\b(forward deployed|fde)\b", configured)
         )
     )
-    if not ordinary and not platform_role and not explicit:
+    if not ordinary and not security_operations and not platform_role and not explicit:
         return (
             "excluded",
             "Role is outside the configured career targets.",
@@ -220,6 +223,7 @@ def score_job(job, profile, settings):
             "grc",
             "compliance",
             "soc analyst",
+            "incident response",
             "devops",
             "devsecops",
             "cloud engineer",

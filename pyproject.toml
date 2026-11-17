@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jobpilot-local"
-version = "1.4.1"
+version = "1.4.2"
 description = "A local desktop job discovery and application tracker with tailored documents and email alerts."
 readme = "README.md"
 requires-python = ">=3.13"
