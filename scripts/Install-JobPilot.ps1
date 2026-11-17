@@ -32,6 +32,7 @@ Get-ChildItem -LiteralPath (Join-Path $SourceRoot 'jobpilot') -File -Filter '*.p
     Copy-Item -LiteralPath $_.FullName -Destination $packageRoot -Force
 }
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'jobpilot\candidate.json') -Destination $packageRoot -Force
+Copy-Item -LiteralPath (Join-Path $SourceRoot 'jobpilot\greenhouse_boards.json') -Destination $packageRoot -Force
 foreach ($filename in @('launcher.py','requirements.lock','README.md','LICENSE','THIRD_PARTY_NOTICES.md')) {
     $from = Join-Path $SourceRoot $filename
     if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination (Join-Path $InstallRoot $filename) -Force }

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jobpilot-local"
-version = "1.4.0"
+version = "1.4.1"
 description = "A local desktop job discovery and application tracker with tailored documents and email alerts."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -59,7 +59,7 @@ packages = ["jobpilot"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-jobpilot = ["candidate.json"]
+jobpilot = ["candidate.json", "greenhouse_boards.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

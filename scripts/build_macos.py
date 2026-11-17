@@ -64,6 +64,7 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         ("web", "jobpilot/_assets/web"),
         ("remote_web", "jobpilot/_assets/remote_web"),
         ("jobpilot/candidate.json", "jobpilot"),
+        ("jobpilot/greenhouse_boards.json", "jobpilot"),
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
     ):

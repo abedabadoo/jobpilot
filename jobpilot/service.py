@@ -45,7 +45,12 @@ DEFAULTS = {
         "Cloud Security Engineer",
         "Information Security Analyst",
         "GRC Analyst",
+        "GRC Engineer",
         "Security Analyst",
+        "DevOps Engineer",
+        "Cloud Engineer",
+        "Platform Engineer",
+        "Forward Deployed Engineer",
     ],
     "location": "Cincinnati, OH",
     "remote": True,
@@ -60,12 +65,16 @@ DEFAULTS = {
     "intervention_timeout_seconds": 28800,
     "ollama_url": "http://127.0.0.1:11436",
     "model": "qwen3.5:9b",
-    "sources": ["linkedin", "indeed"],
+    "sources": ["indeed"],
     "results_per_source": 12,
     "hours_old": 168,
+    "greenhouse_discovery": True,
     "ats_boards": [
         {"source": "greenhouse", "board": "cloudflare"},
         {"source": "greenhouse", "board": "datadog"},
+        {"source": "greenhouse", "board": "cobaltio"},
+        {"source": "greenhouse", "board": "guidepointsecurity"},
+        {"source": "greenhouse", "board": "calahealth"},
     ],
 }
 for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]:
@@ -275,6 +284,9 @@ def discover_once():
     conf = settings()
     conf["search_titles"] = conf["target_roles"]
     conf["locations"] = [conf["location"]]
+    conf["_greenhouse_cursor"] = store.get("greenhouse_cursor", 0)
+    conf["_greenhouse_learned_boards"] = store.get("greenhouse_learned_boards", [])
+    conf["_search_title_cursor"] = store.get("search_title_cursor", 0)
     profile = store.get("profile")
     email_revision = store.get("_email_config_revision", 0)
     count_keys = ["checked", "imported", "existing", "filtered", "removed"]
@@ -294,6 +306,36 @@ def discover_once():
 
     try:
         existing_jobs = store.jobs()
+        fit_signature = sha256(
+            json.dumps(
+                {
+                    "version": 2,
+                    "roles": conf["target_roles"],
+                    "skills": profile.get("skills", []),
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        if store.get("fit_scoring_signature") != fit_signature:
+            for existing in existing_jobs:
+                if (
+                    existing.get("status") in ("queued", "needs_review", "review_required")
+                    and len(str(existing.get("description", ""))) >= 80
+                ):
+                    updated_fit = score_job(existing, profile, conf)
+                    if updated_fit != existing.get("fit"):
+                        store.update_job(existing["id"], fit=updated_fit)
+            store.set("fit_scoring_signature", fit_signature)
+            existing_jobs = store.jobs()
+        known_greenhouse = set(conf["_greenhouse_learned_boards"])
+        for existing in existing_jobs:
+            for route in ("url", "source_url", "apply_url"):
+                slug = collectors._greenhouse_slug(existing.get(route))
+                if slug:
+                    known_greenhouse.add(slug)
+        conf["_greenhouse_learned_boards"] = sorted(known_greenhouse)
+        if len(known_greenhouse) > len(store.get("greenhouse_learned_boards", [])):
+            store.set("greenhouse_learned_boards", conf["_greenhouse_learned_boards"])
         existing_ids = {job["id"] for job in existing_jobs}
         email_routes = {
             canonical_url(existing[key])
@@ -325,6 +367,16 @@ def discover_once():
             else:
                 row["existing"] += 1
         details = getattr(collectors, "get_last_search_result", lambda: {})()
+        if details.get("greenhouse_next_cursor") is not None:
+            store.set("greenhouse_cursor", details["greenhouse_next_cursor"])
+        if details.get("search_title_next_cursor") is not None:
+            store.set("search_title_cursor", details["search_title_next_cursor"])
+        learned = details.get("greenhouse_learned_boards") or []
+        if learned:
+            store.set(
+                "greenhouse_learned_boards",
+                sorted(set(conf["_greenhouse_learned_boards"]) | set(learned)),
+            )
         for detail in details.get("sources", []):
             row = source_row(detail.get("source"))
             row.update({key: value for key, value in detail.items() if key not in count_keys})

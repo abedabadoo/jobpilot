@@ -7,6 +7,7 @@ connecting. Email receipt dates are never treated as job posting dates.
 from __future__ import annotations
 
 import email
+import html
 import imaplib
 import ipaddress
 import json
@@ -15,8 +16,10 @@ import math
 import re
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email import policy
+from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import keyring
@@ -31,6 +34,7 @@ _CREDENTIAL_SERVICE = "JobPilot/IMAP"
 _MAX_BODY = 4 * 1024 * 1024
 _email_result: dict = {}
 _email_lock = threading.Lock()
+GREENHOUSE_BATCH_SIZE = 1000
 
 
 def _validate_host(host: str) -> None:
@@ -116,7 +120,7 @@ def _get_public(url: str) -> tuple[str, str]:
 def _text(value) -> str:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return ""
-    text = str(value)
+    text = html.unescape(html.unescape(str(value)))
     return (
         BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
         if "<" in text
@@ -665,7 +669,7 @@ def _board_jobs(source: str, board: str) -> list[dict]:
                 source,
                 row.get("absolute_url", ""),
                 row.get("title", ""),
-                board,
+                row.get("company_name") or board,
                 (row.get("location") or {}).get("name", ""),
                 row.get("content", ""),
                 row.get("first_published") or row.get("published_at"),
@@ -706,6 +710,58 @@ def _board_jobs(source: str, board: str) -> list[dict]:
     return jobs
 
 
+def greenhouse_boards() -> list[str]:
+    """Bundled public board directory; all postings still come from Greenhouse."""
+    path = Path(__file__).with_name("greenhouse_boards.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _greenhouse_slug(url: str) -> str | None:
+    parts = urlsplit(str(url or ""))
+    if (parts.hostname or "").lower() not in ("boards.greenhouse.io", "job-boards.greenhouse.io"):
+        return None
+    slug = parts.path.strip("/").split("/")[0]
+    return slug.lower() if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", slug) else None
+
+
+def _greenhouse_catalog_board(board: str, profile: dict, settings: dict) -> tuple[list[dict], bool]:
+    from .core import parse_date, role_assessment
+
+    base = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
+    try:
+        body, _ = _get_public(base)
+        rows = json.loads(body).get("jobs", [])
+    except Exception:
+        return [], False
+    jobs = []
+    for row in rows:
+        if row.get("internal_job_id") is None or not row.get("id"):
+            continue
+        if role_assessment(row, profile, settings)[0] == "excluded":
+            continue
+        published = parse_date(row.get("first_published"))
+        if published and datetime.now(timezone.utc) - published > timedelta(days=90):
+            continue
+        try:
+            detail, _ = _get_public(f"{base}/{row['id']}")
+            item = json.loads(detail)
+            job = _job(
+                "greenhouse",
+                item.get("absolute_url") or row.get("absolute_url", ""),
+                item.get("title") or row.get("title", ""),
+                item.get("company_name") or row.get("company_name") or board,
+                (item.get("location") or row.get("location") or {}).get("name", ""),
+                item.get("content", ""),
+                item.get("first_published") or row.get("first_published"),
+                requisition_id=str(row["id"]),
+            )
+            if job["url"] and job["title"]:
+                jobs.append(job)
+        except Exception:
+            continue
+    return jobs, True
+
+
 def get_last_errors() -> list[dict]:
     with _errors_lock:
         return [dict(error) for error in _errors]
@@ -721,7 +777,7 @@ def discover(settings: dict, profile: dict) -> list[dict]:
     jobs, summaries, seen = [], {}, set()
     with _errors_lock:
         _search_warnings.clear()
-    sources = settings.get("sources", ["linkedin", "indeed"])
+    sources = settings.get("sources", ["indeed"])
     if isinstance(sources, str):
         sources = [sources] if sources != "both" else ["linkedin", "indeed"]
     titles = settings.get("search_titles") or settings.get("target_roles") or ["Security Engineer"]
@@ -730,7 +786,16 @@ def discover(settings: dict, profile: dict) -> list[dict]:
         titles = [titles]
     if isinstance(locations, str):
         locations = [locations]
-    titles = list(dict.fromkeys(titles))[:8]
+    all_titles = list(dict.fromkeys(titles))
+    try:
+        title_cursor = int(settings.get("_search_title_cursor", 0)) % len(all_titles)
+    except (TypeError, ValueError, ZeroDivisionError):
+        title_cursor = 0
+    titles = [
+        all_titles[(title_cursor + index) % len(all_titles)]
+        for index in range(min(8, len(all_titles)))
+    ]
+    next_title_cursor = (title_cursor + len(titles)) % len(all_titles) if all_titles else 0
     locations = list(dict.fromkeys(locations))[:4]
     if settings.get("remote") and not any(str(value).casefold() == "remote" for value in locations):
         locations = [*locations[:3], "Remote"]
@@ -762,6 +827,70 @@ def discover(settings: dict, profile: dict) -> list[dict]:
         if not job.get("description"):
             state["descriptions_missing"] += 1
         return True
+
+    for board in list(settings.get("ats_boards", []))[:30]:
+        source = str(board.get("source", "ats")).lower()
+        state = summary(source)
+        state["queries_planned"] += 1
+        state["queries_attempted"] += 1
+        try:
+            for job in _board_jobs(source, str(board["board"])):
+                add_job(job, state)
+        except Exception as exc:
+            state.update(
+                status="error",
+                message="An employer board could not be read.",
+                note=f"{type(exc).__name__}: {str(exc)[:240]}",
+            )
+
+    greenhouse_next_cursor = None
+    greenhouse_total_boards = 0
+    if settings.get("greenhouse_discovery"):
+        boards = list(
+            dict.fromkeys(
+                [
+                    *greenhouse_boards(),
+                    *(
+                        slug
+                        for slug in settings.get("_greenhouse_learned_boards", [])
+                        if isinstance(slug, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", slug)
+                    ),
+                ]
+            )
+        )
+        greenhouse_total_boards = len(boards)
+        if boards:
+            state = summary("greenhouse")
+            try:
+                cursor = int(settings.get("_greenhouse_cursor", 0)) % len(boards)
+            except (TypeError, ValueError):
+                cursor = 0
+            count = min(GREENHOUSE_BATCH_SIZE, len(boards))
+            batch = [boards[(cursor + index) % len(boards)] for index in range(count)]
+            state["queries_planned"] += count
+            state["catalog_boards_checked"] = count
+            state["catalog_total_boards"] = len(boards)
+            failed = 0
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for found, ok in pool.map(
+                    lambda board: _greenhouse_catalog_board(board, profile, settings), batch
+                ):
+                    state["queries_attempted"] += 1
+                    if not ok:
+                        failed += 1
+                    for job in found:
+                        add_job(job, state)
+            greenhouse_next_cursor = (cursor + count) % len(boards)
+            state["catalog_boards_failed"] = failed
+            state["message"] = (
+                f"Checked {count} of {len(boards)} Greenhouse employer boards this pass"
+                + (f"; {failed} could not be read." if failed else ".")
+            )
+            if failed >= max(10, count // 10) and state["status"] == "ok":
+                state.update(
+                    status="partial",
+                    message=f"Checked {count - failed} of {count} Greenhouse boards; several boards could not be read.",
+                )
 
     for source in dict.fromkeys(sources):
         if source not in (
@@ -906,20 +1035,6 @@ def discover(settings: dict, profile: dict) -> list[dict]:
             )
         if source == "linkedin":
             state["details_mode"] = "listing_cards"
-    for board in list(settings.get("ats_boards", []))[:30]:
-        source = str(board.get("source", "ats")).lower()
-        state = summary(source)
-        state["queries_planned"] += 1
-        state["queries_attempted"] += 1
-        try:
-            for job in _board_jobs(source, str(board["board"])):
-                add_job(job, state)
-        except Exception as exc:
-            state.update(
-                status="error",
-                message="An employer board could not be read.",
-                note=f"{type(exc).__name__}: {str(exc)[:240]}",
-            )
     email_config = settings.get("email") or {}
     if email_config.get("enabled"):
         state = summary("email")
@@ -940,6 +1055,18 @@ def discover(settings: dict, profile: dict) -> list[dict]:
         ]
         _search_result.clear()
         _search_result.update(
-            sources=list(summaries.values()), completed_at=datetime.now(timezone.utc).isoformat()
+            sources=list(summaries.values()),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            greenhouse_next_cursor=greenhouse_next_cursor,
+            greenhouse_total_boards=greenhouse_total_boards,
+            search_title_next_cursor=next_title_cursor,
+            greenhouse_learned_boards=sorted(
+                {
+                    slug
+                    for job in jobs
+                    for key in ("url", "source_url", "apply_url")
+                    if (slug := _greenhouse_slug(job.get(key)))
+                }
+            ),
         )
     return jobs

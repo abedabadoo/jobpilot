@@ -74,6 +74,65 @@ def posting(slug, **changes):
     }
 
 
+def test_greenhouse_scan_cursor_and_new_boards_persist(monitor_api, monkeypatch):
+    service, _, _ = monitor_api
+    from jobpilot import collectors
+
+    service.store.add_job(
+        posting("existing", url="https://job-boards.greenhouse.io/existingboard/jobs/123")
+    )
+    seen = []
+    monkeypatch.setattr(collectors, "discover", lambda conf, _: seen.append(conf) or [])
+    monkeypatch.setattr(collectors, "get_last_errors", lambda: [])
+    monkeypatch.setattr(
+        collectors,
+        "get_last_search_result",
+        lambda: {
+            "sources": [],
+            "greenhouse_next_cursor": 1000,
+            "greenhouse_learned_boards": ["newemployer"],
+            "search_title_next_cursor": 8,
+        },
+    )
+    service.discover_once()
+    assert seen[0]["_greenhouse_cursor"] == 0
+    assert seen[0]["_greenhouse_learned_boards"] == ["existingboard"]
+    assert service.store.get("greenhouse_cursor") == 1000
+    assert service.store.get("greenhouse_learned_boards") == ["existingboard", "newemployer"]
+    assert service.store.get("search_title_cursor") == 8
+    service.discover_once()
+    assert seen[1]["_greenhouse_cursor"] == 1000
+    assert seen[1]["_greenhouse_learned_boards"] == ["existingboard", "newemployer"]
+    assert seen[1]["_search_title_cursor"] == 8
+
+
+def test_existing_open_jobs_receive_revised_fit_scores(monitor_api, monkeypatch):
+    service, _, _ = monitor_api
+    from jobpilot import collectors
+
+    service.store.set("settings", {**service.settings(), "target_roles": ["Security Engineer"]})
+    junior = service.store.add_job(
+        posting(
+            "three-years",
+            fit=90,
+            description="3+ years of experience in cloud security. Maintain AWS controls and investigate security alerts.",
+        )
+    )
+    senior = service.store.add_job(
+        posting(
+            "seven-years",
+            title="Senior Security Engineer",
+            fit=90,
+            description="7+ years of experience in cloud security. Maintain AWS controls and investigate security alerts.",
+        )
+    )
+    monkeypatch.setattr(collectors, "discover", lambda *_: [])
+    monkeypatch.setattr(collectors, "get_last_errors", lambda: [])
+    monkeypatch.setattr(collectors, "get_last_search_result", lambda: {"sources": []})
+    service.discover_once()
+    assert service.store.get_job(junior["id"])["fit"] > service.store.get_job(senior["id"])["fit"]
+
+
 def test_search_summary_explains_new_existing_filtered_and_removed_records(
     monitor_api, monkeypatch
 ):

@@ -257,6 +257,7 @@
   function sortedJobs(jobs) {
     return [...jobs].sort(
       (a, b) =>
+        (Number(a.priority_tier) || 0) - (Number(b.priority_tier) || 0) ||
         bucket(a) - bucket(b) ||
         (fitNumber(b) || 0) - (fitNumber(a) || 0) ||
         (Date.parse(b.posted_at) || 0) - (Date.parse(a.posted_at) || 0),

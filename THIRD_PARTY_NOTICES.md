@@ -8,6 +8,7 @@ The MIT license in this repository covers JobPilot's first-party source. Depende
 | Playwright | Browser automation and fixture tests | [Microsoft Playwright](https://github.com/microsoft/playwright-python) |
 | pywebview, PyObjC and pystray | Native desktop windows, Cocoa bridge and Windows system tray | [pywebview](https://github.com/r0x0r/pywebview), [PyObjC](https://github.com/ronaldoussoren/pyobjc), [pystray](https://github.com/moses-palmer/pystray) |
 | JobSpy | Job-board discovery | [JobSpy](https://github.com/speedyapply/JobSpy) |
+| open-jobs board directory (CC0-1.0) | Seed list of public Greenhouse board slugs | [open-jobs](https://github.com/elliottdehn/open-jobs/blob/main/slugs.json) |
 | ReportLab and python-docx | Application document export | [ReportLab](https://www.reportlab.com/), [python-docx](https://github.com/python-openxml/python-docx) |
 | keyring | OS credential storage | [keyring](https://github.com/jaraco/keyring) |
 | pywebpush and cryptography | Web Push encryption and delivery | [pywebpush](https://github.com/web-push-libs/pywebpush), [cryptography](https://github.com/pyca/cryptography) |

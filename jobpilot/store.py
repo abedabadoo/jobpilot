@@ -5,7 +5,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .core import BUCKET_LABELS, TZ, canonical_url, freshness, parse_date, rank_key
+from .core import (
+    BUCKET_LABELS,
+    TZ,
+    canonical_url,
+    experience_priority,
+    freshness,
+    parse_date,
+    rank_key,
+)
 
 
 class Store:
@@ -237,6 +245,7 @@ class Store:
         p = dict(payload, id=job_id)
         p["bucket"] = freshness(p.get("posted_at"))
         p["bucket_label"] = BUCKET_LABELS[p["bucket"]]
+        p["priority_tier"] = experience_priority(p)
         return p
 
     def jobs(self):

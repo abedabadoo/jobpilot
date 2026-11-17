@@ -213,6 +213,25 @@ def test_search_dimensions_are_bounded_and_dates_are_preserved(monkeypatch):
     assert len(calls) == 32
     assert all(query["hours_old"] == 24 for query in calls)
     assert all(job["posted_at"] == "2026-10-21" for job in jobs)
+    assert collectors.get_last_search_result()["search_title_next_cursor"] == 8
+
+
+def test_search_titles_beyond_first_eight_rotate_into_next_pass(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        collectors, "_jobspy_search", lambda **kwargs: calls.append(kwargs["search_term"]) or []
+    )
+    collectors.discover(
+        {
+            "sources": ["indeed"],
+            "target_roles": [f"Role {i}" for i in range(10)],
+            "locations": ["Remote"],
+            "_search_title_cursor": 8,
+        },
+        {},
+    )
+    assert calls == ["Role 8", "Role 9", *[f"Role {i}" for i in range(6)]]
+    assert collectors.get_last_search_result()["search_title_next_cursor"] == 6
 
 
 def test_logged_upstream_failure_is_error_instead_of_empty_success(monkeypatch):
