@@ -17,7 +17,8 @@ $env:PYINSTALLER_CONFIG_DIR = Join-Path $WorkRoot 'pyinstaller-cache'
 $arguments = @('-m','PyInstaller','--noconfirm','--clean','--onedir','--windowed','--name','JobPilot',
     '--distpath',$distRoot,'--workpath',$buildRoot,'--specpath',$specRoot,
     '--collect-all','webview','--collect-all','pystray','--collect-all','clr_loader','--collect-all','pythonnet',
-    '--collect-all','resumeforge','--collect-all','PySide6','--collect-all','pypdfium2',
+    '--collect-all','resumeforge','--collect-all','pypdfium2',
+    '--hidden-import','PySide6.QtCore','--hidden-import','PySide6.QtGui','--hidden-import','PySide6.QtWidgets',
     '--hidden-import','pystray._win32','--icon',(Join-Path $SourceRoot 'assets\jobpilot.ico'),(Join-Path $SourceRoot 'launcher.py'))
 & $BuildPython @arguments
 if ($LASTEXITCODE -ne 0) { throw "Executable build failed with exit code $LASTEXITCODE" }

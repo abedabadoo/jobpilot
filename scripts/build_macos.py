@@ -48,7 +48,6 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         "docx",
         "reportlab",
         "resumeforge",
-        "PySide6",
         "pypdfium2",
         "pdfplumber",
     ):
@@ -61,6 +60,9 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         "uvicorn.loops.auto",
         "uvicorn.protocols.http.auto",
         "uvicorn.lifespan.on",
+        "PySide6.QtCore",
+        "PySide6.QtGui",
+        "PySide6.QtWidgets",
     ):
         command.extend(["--hidden-import", module])
     command.extend(["--copy-metadata", "keyring"])
