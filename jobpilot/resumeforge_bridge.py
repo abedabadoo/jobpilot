@@ -44,6 +44,9 @@ def windows_install_dir() -> Path | None:
 
 
 def desktop_executable() -> Path:
+    combined = os.environ.get("JOBPILOT_DESKTOP_EXE")
+    if combined and Path(combined).is_file():
+        return Path(combined).resolve()
     override = os.environ.get("RESUMEFORGE_DESKTOP_EXE")
     if override:
         candidates = [Path(override)]
@@ -120,11 +123,15 @@ def validate_import_directory(data_dir: Path, folder: Path) -> None:
 def checked_copy(path: str, digest: str, data_dir: Path) -> bool:
     candidate = Path(path)
     applications = Path(data_dir) / "applications"
+    downloads = Path.home() / "Downloads" / "JobPilot RF Docs"
     try:
         return (
             not applications.is_symlink()
             and not candidate.is_symlink()
-            and candidate.resolve().is_relative_to(applications.resolve())
+            and (
+                candidate.resolve().is_relative_to(applications.resolve())
+                or candidate.resolve().is_relative_to(downloads.resolve())
+            )
             and candidate.is_file()
             and 5 <= candidate.stat().st_size <= _MAX_PDF_BYTES
             and hashlib.sha256(candidate.read_bytes()).hexdigest() == digest
@@ -158,6 +165,11 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
     validate_workspace(data_dir, workspace)
     draft_path = workspace / "draft.json"
     if draft_path.exists():
+        draft = json.loads(draft_path.read_text(encoding="utf-8"))
+        if not draft.get("job_company") or not draft.get("job_title"):
+            draft["job_company"] = posting_company(job)
+            draft["job_title"] = str(job.get("title") or "")
+            _atomic_json(draft_path, draft)
         return workspace
     source = (Path(master_dir) if master_dir is not None else master_workspace()) / "draft.json"
     if not source.is_file():
@@ -170,6 +182,7 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
     if (
         not isinstance(profile, dict)
         or not profile.get("name")
+        or profile.get("name") == "Morgan Example"
         or not isinstance(profile.get("roles"), list)
         or not profile["roles"]
         or not isinstance(settings, dict)
@@ -189,18 +202,71 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
         "job_description": _job_description(job),
         "edit_request": "",
         "keywords": keywords,
+        "job_company": posting_company(job),
+        "job_title": str(job.get("title") or ""),
     }
     _atomic_json(draft_path, draft)
     return workspace
 
 
 def open_editor(executable: Path, workspace: Path) -> None:
+    combined = executable.name.lower().startswith("jobpilot")
     subprocess.Popen(
-        [str(executable), "--data-dir", str(workspace)],
+        [
+            str(executable),
+            *(["--resumeforge-child"] if combined else []),
+            "--data-dir",
+            str(workspace),
+        ],
         cwd=str(executable.parent),
         shell=False,
         close_fds=True,
     )
+
+
+def posting_company(job: dict) -> str:
+    return str(job.get("company") or "Employer").strip()
+
+
+def downloads_folder(job: dict) -> Path:
+    from resumeforge.cover_letter import role_folder
+
+    return role_folder(posting_company(job), str(job.get("title") or "Role"))
+
+
+def build_resume(data_dir: Path, job: dict) -> dict:
+    """Run the bundled ResumeForge engine; a cover letter requires a separate UI action."""
+    from uuid import uuid4
+
+    from resumeforge.desktop_support import export_checked
+    from resumeforge.engine import run
+    from resumeforge.models import ModelSettings, Profile, RunRequest
+
+    workspace = prepare_workspace(data_dir, job)
+    draft = json.loads((workspace / "draft.json").read_text(encoding="utf-8"))
+    request = RunRequest(
+        profile=Profile.model_validate(draft["profile"]),
+        settings=ModelSettings.model_validate(draft["settings"]),
+        job_description=draft["job_description"],
+        reviewed_priorities=[x.strip() for x in draft.get("keywords", "").split(",") if x.strip()],
+    )
+    run_dir = workspace / "runs" / uuid4().hex
+    result = run(request, run_dir)
+    if result["status"] != "ready":
+        return {"status": result["status"], "workspace": workspace.name}
+    folder = downloads_folder(job)
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / "Alnajjar_Resume.pdf"
+    export_checked(run_dir, destination)
+    draft["last_run"] = run_dir.name
+    _atomic_json(workspace / "draft.json", draft)
+    return {
+        "status": "ready",
+        "path": str(destination),
+        "workspace": workspace.name,
+        "run_id": run_dir.name,
+        "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+    }
 
 
 def _inside(path: Path, root: Path) -> Path:

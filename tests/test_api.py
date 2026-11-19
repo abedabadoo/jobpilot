@@ -81,9 +81,9 @@ def test_preparing_review_documents_does_not_requeue_submission(tmp_path, monkey
         }
     )
     monkeypatch.setattr(
-        service,
-        "prepare",
-        lambda *args: {"generation_note": "", "generation_mode": "deterministic"},
+        service.resumeforge_bridge,
+        "build_resume",
+        lambda *args: {"status": "ready", "path": "resume.pdf"},
     )
     service.prepare_job(job["id"])
     assert service.store.get_job(job["id"])["status"] == "needs_review"
@@ -192,7 +192,7 @@ def test_interrupted_review_preparation_restores_review_gate(tmp_path, monkeypat
     def crash(*args):
         raise SystemExit("Fixture interruption")
 
-    monkeypatch.setattr(service, "prepare", crash)
+    monkeypatch.setattr(service.resumeforge_bridge, "build_resume", crash)
     with pytest.raises(SystemExit):
         service.prepare_job(job["id"])
     service.store.recover()

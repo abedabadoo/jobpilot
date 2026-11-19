@@ -8,4 +8,5 @@ recursive-include scripts *.py *.ps1 *.command
 recursive-include extension *.json *.html *.css *.js *.cjs *.md
 recursive-include docs *.md *.png
 recursive-include tests *.py
+recursive-include resumeforge *.py *.json *.ttf *.txt *.html *.css *.js *.sh *.ps1
 global-exclude __pycache__ *.py[cod]

@@ -1,6 +1,6 @@
 # Third-party software
 
-The MIT license in this repository covers JobPilot's first-party source. Dependencies, browser binaries, model weights and downloaded tools retain their own licenses. They are installed separately and are not vendored in this repository.
+The MIT license in this repository covers JobPilot's first-party source. Dependencies, browser binaries, model weights and downloaded tools retain their own licenses. Native application builds bundle some dependencies; the Liberation Sans font license is included with the bundled font files.
 
 | Component | Purpose | Upstream |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ The MIT license in this repository covers JobPilot's first-party source. Depende
 | JobSpy | Job-board discovery | [JobSpy](https://github.com/speedyapply/JobSpy) |
 | open-jobs board directory (CC0-1.0) | Seed list of public Greenhouse board slugs | [open-jobs](https://github.com/elliottdehn/open-jobs/blob/main/slugs.json) |
 | ReportLab and python-docx | Application document export | [ReportLab](https://www.reportlab.com/), [python-docx](https://github.com/python-openxml/python-docx) |
+| PySide6 Essentials and PDFium | ResumeForge editor and PDF preview | [Qt for Python](https://doc.qt.io/qtforpython-6/), [PDFium](https://pdfium.googlesource.com/pdfium/) |
 | keyring | OS credential storage | [keyring](https://github.com/jaraco/keyring) |
 | pywebpush and cryptography | Web Push encryption and delivery | [pywebpush](https://github.com/web-push-libs/pywebpush), [cryptography](https://github.com/pyca/cryptography) |
 | Ollama and Qwen3.5 | Optional local document fact selection | [Ollama](https://github.com/ollama/ollama), [Qwen model](https://ollama.com/library/qwen3.5:9b) |

@@ -47,6 +47,10 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         "playwright",
         "docx",
         "reportlab",
+        "resumeforge",
+        "PySide6",
+        "pypdfium2",
+        "pdfplumber",
     ):
         command.extend(["--collect-all", package])
     for module in (
@@ -82,8 +86,8 @@ def build(output: Path, *, dmg: bool = False) -> Path:
             "Build JobPilot.app on native macOS; cross-platform freezing is unsupported"
         )
     architecture = platform.machine()
-    if architecture not in {"arm64", "x86_64"}:
-        raise RuntimeError(f"Unsupported macOS architecture: {architecture}")
+    if architecture != "x86_64":
+        raise RuntimeError("This combined JobPilot build targets Intel Macs (x86_64).")
     source = Path(__file__).resolve().parents[1]
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)

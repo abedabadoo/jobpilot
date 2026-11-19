@@ -10,12 +10,10 @@ import pytest
 from playwright.sync_api import expect, sync_playwright
 
 PDF_BYTES = b"%PDF-1.4\n% JobPilot document download fixture\n%%EOF\n"
-RESUME_PATH = "C:/JobPilot-fixture/applications/resume.pdf"
+RESUME_PATH = "C:/JobPilot-fixture/JobPilot RF Docs/Northstar Labs - Cloud Security Engineer/Alnajjar_Resume.pdf"
 DOCUMENTS = {
-    "resume_pdf": RESUME_PATH,
-    "resume_docx": "C:/JobPilot-fixture/applications/resume.docx",
-    "cover_pdf": "C:/JobPilot-fixture/applications/cover-letter.pdf",
-    "cover_docx": "C:/JobPilot-fixture/applications/cover-letter.docx",
+    "resumeforge_pdf": RESUME_PATH,
+    "resumeforge_cover_pdf": "C:/JobPilot-fixture/JobPilot RF Docs/Northstar Labs - Cloud Security Engineer/Alnajjar_CoverLetter.pdf",
 }
 
 
@@ -204,10 +202,8 @@ def test_failed_resolution_keeps_the_problem_available_to_retry(dashboard):
 @pytest.mark.parametrize(
     ("label", "key"),
     [
-        ("Resume PDF", "resume_pdf"),
-        ("Resume Word", "resume_docx"),
-        ("Cover letter PDF", "cover_pdf"),
-        ("Cover letter Word", "cover_docx"),
+        ("Resume PDF", "resumeforge_pdf"),
+        ("Cover letter PDF", "resumeforge_cover_pdf"),
     ],
 )
 def test_opening_each_document_dispatches_without_waiting_for_background_poll(

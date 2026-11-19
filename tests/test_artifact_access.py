@@ -16,7 +16,7 @@ def documents(tmp_path, monkeypatch):
     return service, client, headers, folder
 
 
-@pytest.mark.parametrize("name", ["resume.pdf", "cover-letter.docx"])
+@pytest.mark.parametrize("name", ["Alnajjar_Resume.pdf", "Alnajjar_CoverLetter.pdf"])
 def test_open_document_uses_default_app_and_does_not_wait_for_worker(documents, monkeypatch, name):
     service, client, headers, folder = documents
     target = folder / name

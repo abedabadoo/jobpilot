@@ -4,7 +4,7 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-JobPilot is a Windows and macOS job-search assistant. It finds opportunities, highlights job-description keywords, prepares tailored resumes and cover letters, and tracks the applications you submit yourself. Its Chrome extension fills applications in your normal signed-in browser.
+JobPilot combines job discovery and ResumeForge in one Windows or Intel Mac application. It highlights job-description keywords, builds tailored resume PDFs, and tracks the applications you submit yourself. Its Chrome extension fills applications in your normal signed-in browser.
 
 ![JobPilot dashboard](docs/images/dashboard.png)
 
@@ -13,13 +13,13 @@ Dashboard shown with fictional example data.
 ## The workflow
 
 1. Search job boards and public employer feeds, import a posting, or sync email alerts.
-2. Open a role to see its fit score, description, keywords, and application documents.
-3. Review the documents and open the original posting in your usual browser, using its saved sessions.
+2. Roles scoring at least 80% start a ResumeForge resume build automatically. Open any role to review its fit score, keywords, and PDF.
+3. Edit the resume in ResumeForge when needed. After a checked resume is ready, choose **Create cover letter…** there if you want one. Open the original posting in your usual browser.
 4. Click **Applied?** when you finish. The role moves from Opportunities to Applied.
 
 Each opportunity also has **Review** and **Remove** controls. Removed jobs are excluded from later imports and searches. The Problems workspace records issues in plain language and links to the affected job.
 
-Search and document preparation run locally and can continue after closing the dashboard. Windows offers system tray controls; macOS uses a native Cocoa window and menu. Opening a job link is independent of the document worker.
+Search and ResumeForge resume preparation run locally and can continue after closing the dashboard. Windows offers system tray controls; macOS uses a native Cocoa window and menu. Opening a job link is independent of the document worker.
 The opportunities list switches to cards in a narrow desktop window, so Review, Applied, and Remove remain visible on a 900 × 1440 portrait display.
 
 Use **Start monitoring** above the opportunity list to keep checking automatically. Choose a check interval, or use **Search now** for a single check. The panel shows the next check, new opportunities, already saved jobs, filtered results, and each source's availability. Configured titles rotate through job-board searches in groups of eight, so roles beyond the first eight are checked on later passes. Each title is searched locally and remotely when enabled. The result limit applies to each role/location query. Source delays and rate limits can affect when a posting appears; limited sources pause while the others continue.
@@ -30,19 +30,13 @@ Recent roles requesting roughly three years of experience appear ahead of fresh 
 
 ## Documents and keywords
 
-The resume uses a single-column layout with readable type, clear section rules, aligned role headers, and PDF and Word exports. Cover letters use the role, employer, career history, and relevant job keywords. The role detail lists extracted tools and disciplines, including terms beyond the current profile's skill list.
+ResumeForge owns all document creation. Its measured one-page layout keeps Interests beneath Skills & Certifications and lets you edit keywords and experience. JobPilot never creates a resume or cover letter. It sends the posting and its extracted keywords to the bundled ResumeForge engine once a role reaches 80% fit. A resume that needs review remains available in the editor for revision.
 
-JobPilot selects and rewrites relevant experience bullets, adds job terms, and removes less useful skills when tailoring a resume. Employer names, dates, education, and career achievements come from the saved profile. Interests stay beneath Skills & Certifications in every resume. Local Ollama handles tailoring and cover letters, with a deterministic fallback when the model is unavailable.
-
-Document generation does not submit an application. Review and edit the exports before using them.
-
-In a role's **Review** window, **Open** launches the PDF or Word file in your usual document app. **Download** saves a separate copy. The desktop window supports a save dialog; browser downloads use the browser's normal download settings.
+Checked resumes are saved as `~/Downloads/JobPilot RF Docs/Company - Role/Alnajjar_Resume.pdf`. Cover letters are never generated automatically. The editor offers an editable draft only after a checked resume exists; saving it creates `Alnajjar_CoverLetter.pdf` in the same role folder. JobPilot's **Sync ResumeForge PDFs** control adds the optional letter to the role. The Chrome extension can attach these PDFs.
 
 ### ResumeForge handoff
 
-Install and save your profile in [ResumeForge](https://github.com/abedabadoo/resumeforge). From a JobPilot opportunity, choose **Open in ResumeForge**. The desktop editor opens that posting and its keywords in a separate workspace, with your saved ResumeForge profile and model settings. Edit and build the resume there. When its PDF passes ResumeForge's checks, return to JobPilot and choose **Use checked PDF**. The role then lists a separate **ResumeForge PDF** beside its existing resume and cover letters.
-
-Reopening a role keeps its ResumeForge edits. A changed posting starts a new workspace and leaves the earlier draft alone. JobPilot never overwrites ResumeForge's main workspace. The two apps use separate Python processes, so neither PDF engine or its dependencies change.
+Choose **ResumeForge profile** to edit your source resume or **Open in ResumeForge** on a role to edit that tailored draft. The existing ResumeForge profile is reused. Reopening a role keeps its edits; a changed posting starts a new workspace. The editor starts only when opened, so job monitoring does not keep Qt running in memory.
 
 ## Gmail and email alerts
 
@@ -54,9 +48,9 @@ For Gmail, use a Google app password with `imap.gmail.com` on port `993`. A norm
 
 ## Requirements and setup
 
-Packaged desktop releases include their Python runtime. Choose the native Mac archive for Apple Silicon (`arm64`) or Intel (`x86_64`); see [Mac installation and source setup](docs/macos.md). Default Mac builds are ad hoc signed, without Apple notarization.
+Packaged desktop releases include their Python runtime. The combined Mac archive targets Intel (`x86_64`); see [Mac installation and source setup](docs/macos.md). Default Mac builds are ad hoc signed, without Apple notarization.
 
-For Windows source development, use Python 3.13 and Microsoft Edge WebView2. The launcher can manage local Ollama for document preparation. Browser automation dependencies remain for dormant legacy modules and their regression tests.
+For Windows source development, use Python 3.13 and Microsoft Edge WebView2. ResumeForge can build with its deterministic provider or an optional locally configured model. Browser automation dependencies remain for dormant legacy modules and their regression tests.
 
 ```powershell
 git clone https://github.com/abedabadoo/jobpilot.git

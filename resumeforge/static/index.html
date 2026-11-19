@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>ResumeForge · A considered fit</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="ResumeForge home"><span class="brand-mark" aria-hidden="true">r<span>f</span></span><span>ResumeForge<small>A considered fit.</small></span></a>
+    <div class="header-right"><span class="local-badge"><span></span> Local workspace</span><button id="save-draft" class="button quiet" type="button">Save draft</button></div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar" aria-label="Source and model configuration">
+      <div class="section-eyebrow">YOUR WORKSPACE</div>
+      <section class="source-card">
+        <div class="card-heading"><span class="step">01</span><h2>Source resume</h2></div>
+        <div class="document-icon" aria-hidden="true"><span></span><span></span><span></span></div>
+        <h3 id="profile-name">Loading your profile…</h3>
+        <p id="profile-summary" class="muted">Your experience is the source of truth.</p>
+        <label class="button secondary import-button" for="source-file"><span aria-hidden="true">↑</span> Import PDF or DOCX</label>
+        <input id="source-file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="visually-hidden">
+        <p class="micro">Imports become structured content. Preview uses the fixed ResumeForge template.</p>
+        <p id="import-status" class="inline-status" role="status"></p>
+      </section>
+
+      <section class="model-card">
+        <div class="card-heading"><span class="step">02</span><h2>Writing engine</h2></div>
+        <button type="button" id="use-laptop" class="button secondary full-width" hidden>Use installed laptop model</button><label for="provider">Model provider</label>
+        <select id="provider"><option value="none">Offline · built-in examples</option><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI-compatible API</option></select>
+        <div id="model-fields" hidden>
+          <label for="base-url">Endpoint</label><input id="base-url" type="url" spellcheck="false" placeholder="http://127.0.0.1:11434">
+          <label for="model-name">Model name</label><input id="model-name" type="text" spellcheck="false" placeholder="Your installed model" list="available-models"><datalist id="available-models"></datalist>
+          <div id="api-key-field" hidden><label for="api-key-env">API key environment variable</label><input id="api-key-env" type="text" spellcheck="false" placeholder="RESUMEFORGE_API_KEY"><p class="micro">Set the key on the server. Enter its variable name here, never the secret.</p></div>
+          <button id="test-model" class="button secondary full-width" type="button">Test connection</button>
+        </div>
+        <p id="model-note" class="micro">Render and inspect your resume without AI. Connect a model for contextual rewriting.</p>
+        <p id="model-status" class="inline-status" role="status"></p>
+        <details class="small-details"><summary>Engine settings</summary><label for="strategy">Model workflow</label><select id="strategy"><option value="laptop">Sequential editor and reviewer</option><option value="full">Whole document planner</option></select><label for="max-rounds">Maximum revision rounds</label><input id="max-rounds" type="number" min="1" max="5" value="3"><label for="timeout">Model timeout (seconds)</label><input id="timeout" type="number" min="10" max="900" value="180"></details>
+      </section>
+
+      <div class="principles"><span class="lock" aria-hidden="true">⌑</span><div><strong>Typography stays put.</strong><p>Fixed margins, fonts, and spacing. Content earns the space.</p></div></div>
+      <p class="privacy-note">Save draft stores your workspace in this browser. Generated PDFs and run reports save locally in .local-runs. Model requests go to your configured endpoint.</p>
+      <button id="clear-draft" class="text-button" type="button">Clear saved draft</button>
+    </aside>
+
+    <section class="editor" aria-label="Resume tailoring workspace">
+      <div class="editor-intro"><div class="section-eyebrow">MAKE YOUR EXPERIENCE RELEVANT</div><h1>Your next role,<br><span>in your own experience.</span></h1><p>Bring the job. Shape the story. Keep the page.</p></div>
+      <div id="app-message" class="message" role="status" aria-live="polite" hidden></div>
+      <div id="error-message" class="message error" role="alert" hidden></div>
+
+      <section class="editor-section">
+        <div class="section-title"><h2>The opportunity</h2><span class="subtle-tag">03 · TARGET</span></div>
+        <label for="job-description">Job description</label>
+        <textarea id="job-description" rows="8" maxlength="40000" placeholder="Paste the role’s responsibilities, requirements, and preferred experience…"></textarea>
+        <div class="field-meta"><span>Used to prioritize relevant experience</span><span id="job-count">0 / 40,000</span></div>
+        <button type="button" id="analyze-job" class="button secondary">Analyze posting</button>
+        <p id="analysis-status" class="inline-status" role="status"></p>
+        <details id="analysis-detail" class="small-details" hidden><summary>Why these priorities?</summary><ol id="analysis-list" class="note-list"></ol></details>
+        <label for="keywords">Priority list</label>
+        <textarea id="keywords" rows="5" placeholder="Analyze the posting to see suggested priorities, highest first."></textarea>
+        <p class="micro">Add, remove, or reorder terms before building. Use one per line. Your reviewed list sets the order.</p>
+        <label for="edit-request">Editing instructions <span class="optional">optional</span></label>
+        <textarea id="edit-request" rows="2" maxlength="3000" placeholder="For example: emphasize deployment automation in the first job."></textarea>
+      </section>
+      <label for="draft-mode">Bullet generation</label>
+      <select id="draft-mode"><option value="inspiration">Create role-specific examples</option><option value="grounded">Use only supported experience</option></select>
+      <p class="micro">Examples can include invented work and numbers. They are editable in this draft and stay separate from your source profile.</p>
+      <div id="grounded-options" hidden><label for="wording-policy">Supported experience wording</label>
+      <select id="wording-policy"><option value="rewrite">Reword supported experience</option><option value="verified">Keep exact source wording</option></select></div>
+
+      <details class="editor-details" id="ideas-details">
+        <summary><span>Brainstorm bullet ideas</span><span class="summary-icon" aria-hidden="true">+</span></summary>
+        <div class="details-content">
+          <p class="helper-text">Start with fictional accomplishments, including example tools and numbers. Rewrite one with your real experience. You can leave out any numbers you never measured.</p>
+          <label for="idea-role">Experience role</label><select id="idea-role"></select>
+          <label for="idea-focus">Topic <span class="optional">optional</span></label>
+          <input id="idea-focus" maxlength="300" type="text" placeholder="e.g. speeding up cloud deployments">
+          <button id="generate-ideas" class="button secondary" type="button" disabled>Generate ideas</button>
+          <p id="ideas-status" class="inline-status" role="status" aria-live="polite"></p>
+          <div id="idea-list"></div>
+        </div>
+      </details>
+
+      <details class="editor-details" id="facts-details"><summary><span>Add verified experience</span><span class="summary-icon" aria-hidden="true">+</span></summary><div class="details-content"><p class="helper-text">Add projects, tools, or measurable results you can personally confirm. The engine can use these facts to write stronger bullets.</p><label for="fact-role">Relevant role</label><select id="fact-role"></select><label for="fact-text">What did you do?</label><textarea id="fact-text" rows="3" maxlength="4000" placeholder="Describe the work, tools used, and any verified results."></textarea><button id="add-fact" class="button secondary" type="button">Add verified fact</button><ul id="fact-list" class="fact-list"></ul></div></details>
+
+      <div class="action-area"><button id="run-button" class="button primary" type="button" disabled><span id="run-label">Build & inspect PDF</span><span aria-hidden="true">↗</span></button><p id="run-note">No model connected. This checks the source layout.</p></div>
+
+      <section id="example-section" class="review-section" hidden><div class="section-title"><h2>New bullet points</h2></div><p class="helper-text">These examples appear as ordinary bullets on the PDF. Edit an example below or clear it to return its slot to the source options.</p><div id="example-list"></div><button id="apply-examples" type="button" class="button secondary">Apply changes and refit</button></section>
+      <section id="review-section" class="review-section" hidden aria-labelledby="review-title"><div class="section-title"><h2 id="review-title">Claims to review</h2><span id="claim-count" class="count-badge"></span></div><p class="helper-text">These statements include experience the source does not establish. Edit the wording and confirm only what is accurate. Unconfirmed claims cannot be exported.</p><div id="claims-list"></div><button id="apply-review" class="button secondary full-width" type="button">Apply reviewed edits & check fit</button></section>
+
+      <section id="results-section" hidden class="results-section"><div class="section-title"><h2>What changed</h2><span id="change-count" class="subtle-tag"></span></div><div id="keyword-coverage" class="coverage"></div><div id="change-list"></div><details id="warnings-details" class="small-details" hidden><summary>Review notes</summary><ul id="warning-list" class="note-list"></ul></details></section>
+
+      <details class="editor-details advanced"><summary><span>Source profile & advanced edits</span><span class="summary-icon" aria-hidden="true">+</span></summary><div class="details-content"><p class="helper-text">Edit the structured source, including skills and existing bullets. Each new run uses this profile. Keep IDs stable and the JSON valid.</p><label for="profile-json">Source profile JSON</label><textarea id="profile-json" class="code-input" rows="12" spellcheck="false" aria-describedby="profile-json-help"></textarea><p id="profile-json-help" class="micro">Changes are read when you build, apply edits, or save your draft.</p><div id="plan-editor" hidden><label for="plan-json">Tailoring plan JSON</label><textarea id="plan-json" class="code-input" rows="10" spellcheck="false"></textarea><p class="micro">Candidate text can be edited here. Use Apply plan edits to rebuild with this plan.</p><button id="apply-plan" class="button secondary" type="button">Apply plan edits & check fit</button></div></div></details>
+    </section>
+
+    <section class="preview-panel" aria-label="PDF preview and layout checks">
+      <div class="preview-top"><div><div class="section-eyebrow">THE FINISHED PAGE</div><h2>Live proof</h2></div><span id="result-badge" class="status-badge neutral">Awaiting first build</span></div>
+      <div class="preview-toolbar"><span><span class="page-icon" aria-hidden="true">▤</span> US Letter <span class="toolbar-dot">·</span> Fixed typography</span><a id="open-preview" class="text-button" target="_blank" rel="noopener" hidden>Open preview ↗</a></div>
+      <div id="preview-stage" class="preview-stage"><div id="preview-empty" class="preview-empty"><div class="paper-illustration" aria-hidden="true"><div class="paper-title"></div><div class="paper-contact"></div><div class="paper-rule"></div><div class="paper-line w70"></div><div class="paper-line"></div><div class="paper-line w85"></div><div class="paper-line"></div><div class="paper-rule second"></div><div class="paper-line"></div><div class="paper-line w85"></div><div class="paper-line"></div><div class="paper-line w70"></div><div class="paper-rule second"></div><div class="paper-line"></div><div class="paper-line w85"></div></div><h3>Every line has a place.</h3><p>Build your resume to see the PDF<br>and measured page-fit checks here.</p></div><iframe id="pdf-preview" title="Resume PDF preview" hidden></iframe><div id="preview-working" class="preview-working" hidden><span class="spinner" aria-hidden="true"></span><span id="progress-text">Building your document…</span></div></div>
+      <div class="proof-footer"><div class="fit-heading"><h3>Page-fit checks</h3><span id="iteration-count" class="micro">Measured after rendering</span></div><div class="metric-grid"><div><span>Pages</span><strong id="metric-pages">—</strong></div><div><span>Page fill</span><strong id="metric-fill">—</strong></div><div><span>Bottom gap</span><strong id="metric-gap">—</strong></div></div><div class="fill-track" aria-hidden="true"><div id="fill-bar"></div></div><p id="fit-explanation" class="micro">Content must fit one page and finish within the template’s bottom tolerance.</p><div id="check-list" class="check-list"></div><a id="download-button" class="button download disabled" aria-disabled="true" tabindex="-1">Download checked PDF <span aria-hidden="true">↓</span></a><p id="export-note" class="micro centered">Export unlocks after content and layout checks pass.</p></div>
+    </section>
+  </main>
+</body>
+</html>

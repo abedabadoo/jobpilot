@@ -1,6 +1,6 @@
 # JobPilot on macOS
 
-JobPilot uses a native Cocoa dashboard and a loopback-only background service on Mac. Download the `arm64` archive for Apple Silicon or `x86_64` for Intel. The application includes its Python runtime and service dependencies; a separate Python installation is unnecessary for the packaged app.
+The combined JobPilot and ResumeForge app uses a native Cocoa dashboard and a loopback-only background service on Intel Macs. Download the `x86_64` archive. The application includes its Python runtime, ResumeForge editor, and service dependencies; a separate installation of either app is unnecessary.
 
 ## Install a native release
 
@@ -8,13 +8,13 @@ JobPilot uses a native Cocoa dashboard and a loopback-only background service on
 2. Move `JobPilot.app` to `~/Applications` or `/Applications`, then open it. Keep the app at its installed path if you enable sign-in startup.
 3. If macOS blocks an unsigned download, review its source and use **System Settings → Privacy & Security → Open Anyway**, then follow the macOS confirmation. The default CI builds are ad hoc signed, without an Apple Developer ID or notarization. A successful build does not imply Apple notarization.
 
-Alternatively, put `Install-JobPilot-macOS.command` alongside the matching ZIP and run `bash Install-JobPilot-macOS.command` in Terminal. It installs into `~/Applications`, requires no administrator access, and refuses to overwrite an existing app. You can also pass the ZIP path as its first argument. The installer preserves macOS quarantine and does not bypass Gatekeeper.
+Alternatively, put `Install-JobPilot-macOS.command` alongside the ZIP and run `bash Install-JobPilot-macOS.command` in Terminal. It installs or updates `~/Applications/JobPilot.app` without administrator access. Quit JobPilot before updating. Your data and existing ResumeForge profile remain outside the app bundle.
 
-The dashboard opens without Ollama or a model. Discovery, email, manual tracking and fallback document preparation remain available. The app does not download a multi-gigabyte model or an automation browser on first launch. The Chrome autofill extension uses your existing signed-in Chrome session; see its separate installation instructions.
+The dashboard opens without Ollama or a model. Discovery, email, manual tracking, and the ResumeForge PDF builder remain available. ResumeForge builds a resume automatically for roles scoring at least 80% fit. Cover letters are optional and created only in its editor after a resume is checked. The app does not download a model or automation browser on first launch. The Chrome autofill extension uses your signed-in Chrome session.
 
 ## Data and desktop behavior
 
-Data is stored in `~/Library/Application Support/JobPilot`, outside the app bundle. Set `JOBPILOT_DATA_DIR` to use another location when starting from Terminal. Logs are under `logs` in that directory. Deleting the app does not delete your profile, documents or database.
+Data is stored in `~/Library/Application Support/JobPilot`, outside the app bundle. The combined editor reuses the ResumeForge profile in `~/Library/Application Support/ResumeForge/workspace`. Checked PDFs go to `~/Downloads/JobPilot RF Docs/Company - Role`. Set `JOBPILOT_DATA_DIR` to use another JobPilot data location when starting from Terminal. Logs are under `logs` in that directory.
 
 The native JobPilot menu can open the dashboard. Closing or quitting the dashboard leaves its independent local service running. The next launch reuses the service at `http://127.0.0.1:8765`. A second desktop launch signals the existing dashboard rather than starting another desktop. **Stop worker** in the dashboard stops scheduled work; closing a window does not stop it.
 
@@ -68,6 +68,6 @@ The output ZIP contains `JobPilot.app`. The installer is copied next to it. All 
 
 By default PyInstaller uses ad hoc signing. Set `JOBPILOT_CODESIGN_IDENTITY` to an installed Apple signing identity to request that identity during packaging. Apple Developer ID signing and notarization require real Apple credentials and are separate release steps. Do not label a build notarized unless it has actually passed Apple's notarization service and the ticket has been stapled and checked.
 
-CI uses native `macos-15` Apple Silicon and `macos-15-intel` Intel jobs. Native smoke tests exercise the frozen executable's diagnostic command, bundled service child, PDF preparation, scoped extension API, and visible Cocoa dashboard. The packaged app opens its real window and closes through the native menu; the service must remain healthy afterward. Mocked platform tests on Windows do not establish a working native Mac release.
+CI uses a native `macos-15-intel` runner. Native smoke tests exercise the frozen executable's diagnostic command, bundled service child, ResumeForge PDF preparation, scoped extension API, and visible Cocoa dashboard. The packaged app opens its real window and closes through the native menu; the service must remain healthy afterward.
 
 To repeat those checks against a local bundle with disposable fictional data, run `python scripts/smoke_macos.py --app dist/macos/macos-build/dist/JobPilot.app --report dist/macos/smoke.json --gui` from the source checkout. This requires a logged-in Mac desktop with a WindowServer.

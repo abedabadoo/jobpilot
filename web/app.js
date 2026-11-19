@@ -340,19 +340,17 @@
   }
   function documentEntries(job) {
     const names = {
-      resumeforge_pdf: 'ResumeForge PDF',
-      resume_pdf: 'Resume PDF',
-      resume_docx: 'Resume Word',
-      cover_pdf: 'Cover letter PDF',
-      cover_docx: 'Cover letter Word',
+      resumeforge_pdf: 'Resume PDF',
+      resumeforge_cover_pdf: 'Cover letter PDF',
     };
     return artifactEntries(job.documents || job.application?.documents)
       .filter(
         ([key, path]) =>
-          (key !== 'resumeforge_pdf' || job.resumeforge?.current !== false) &&
+          key in names &&
+          job.resumeforge?.current !== false &&
           typeof path === 'string' &&
           /^(?:[A-Za-z]:[\\/]|\/)/.test(path) &&
-          /\.(?:pdf|docx)$/i.test(path),
+          /\.pdf$/i.test(path),
       )
       .map(([key, path]) => [names[key] || path.split(/[\\/]/).pop(), path]);
   }
@@ -1280,6 +1278,7 @@
   function showJob(id) {
     const job = state?.jobs.find((item) => String(item.id) === String(id));
     if (!job) return;
+    const busy = ['preparing', 'applying', 'submitting'].includes(job.status);
     const content = openModal(text(job.title, 'Opportunity details'), 'REVIEW & PREPARE', true);
     selectedJob = job.id;
     content.dataset.jobId = String(job.id);
@@ -1339,8 +1338,12 @@
     content.append(keywordSection);
     const docs = el('section', 'detail-section document-section');
     docs.append(
-      el('h3', '', 'Your application documents'),
-      el('p', 'modal-note', 'Built from your saved career facts. Review them before applying.'),
+      el('h3', '', 'ResumeForge documents'),
+      el(
+        'p',
+        'modal-note',
+        'ResumeForge builds resumes. Cover letters are created only when you choose that option in its editor.',
+      ),
     );
     const entries = documentEntries(job),
       downloads = el('div', 'artifact-links');
@@ -1368,27 +1371,6 @@
     });
     if (entries.length) docs.append(downloads);
     else docs.append(el('p', 'document-empty', 'No documents generated for this role yet.'));
-    const busy = ['preparing', 'applying', 'submitting'].includes(job.status),
-      prepare = button(
-        busy
-          ? 'Generating documents…'
-          : entries.length
-            ? 'Regenerate documents'
-            : 'Generate documents',
-        'primary',
-        'file',
-      );
-    prepare.disabled = busy;
-    prepare.addEventListener('click', async () => {
-      const result = await action(
-        prepare,
-        `/api/jobs/${encodeURIComponent(job.id)}/prepare`,
-        {},
-        'Document generation requested.',
-      );
-      if (result) showJob(job.id);
-    });
-    docs.append(prepare);
     const forge = el('div', 'resumeforge-section');
     forge.append(
       el('h3', '', 'ResumeForge'),
@@ -1399,11 +1381,20 @@
       ),
     );
     const forgeControls = el('div', 'detail-links'),
+      forgeProfile = button('ResumeForge profile', 'secondary', 'file'),
       forgeOpen = button('Open in ResumeForge', 'secondary', 'external'),
-      forgeUse = button('Use checked PDF', 'secondary', 'file'),
+      forgeUse = button('Sync ResumeForge PDFs', 'secondary', 'file'),
       forgeStatus = el('p', 'modal-note', 'Checking ResumeForge…');
     let forgeRefreshTimer;
     forgeUse.disabled = true;
+    forgeProfile.addEventListener('click', async () => {
+      await action(
+        forgeProfile,
+        '/api/resumeforge/profile/open',
+        {},
+        'Opened ResumeForge profile.',
+      );
+    });
     forgeOpen.addEventListener('click', async () => {
       const result = await action(
         forgeOpen,
@@ -1422,7 +1413,7 @@
       );
       if (result && selectedJob === job.id && $('modal').open) showJob(job.id);
     });
-    forgeControls.append(forgeOpen, forgeUse);
+    forgeControls.append(forgeProfile, forgeOpen, forgeUse);
     forge.append(forgeControls, forgeStatus);
     docs.append(forge);
     content.append(docs);
@@ -1447,11 +1438,11 @@
           failed: 'The latest ResumeForge build did not finish. Try again there.',
           invalid: 'JobPilot could not verify the latest ResumeForge PDF.',
           ready: result.attached
-            ? 'ResumeForge PDF is already available with this role.'
-            : 'Checked PDF ready. Choose Use checked PDF to add it to this role.',
+            ? 'Resume ready. Sync again after creating an optional cover letter.'
+            : 'Checked PDF ready. Sync it to add it to this role.',
         };
         forgeStatus.textContent = messages[result.status] || 'ResumeForge status is unavailable.';
-        forgeUse.disabled = result.status !== 'ready' || Boolean(result.attached);
+        forgeUse.disabled = result.status !== 'ready';
       } catch (_) {
         if (forge.isConnected) {
           forgeStatus.textContent =

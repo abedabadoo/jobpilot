@@ -23,7 +23,22 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
     with tempfile.TemporaryDirectory(prefix="jobpilot-bundle-smoke-") as directory:
         temporary = Path(directory)
         data = temporary / "data"
-        env = {**os.environ, "JOBPILOT_DATA_DIR": str(data), "JOBPILOT_TESTING": "0"}
+        home = temporary / "home"
+        master = home / "Library/Application Support/ResumeForge/workspace"
+        master.mkdir(parents=True)
+        profile = json.loads(
+            (Path(__file__).resolve().parents[1] / "resumeforge/data/abu.profile.json").read_text()
+        )
+        profile["name"] = "Smoke Candidate"
+        (master / "draft.json").write_text(
+            json.dumps({"version": 2, "profile": profile, "settings": {"provider": "none"}})
+        )
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "JOBPILOT_DATA_DIR": str(data),
+            "JOBPILOT_TESTING": "0",
+        }
         diagnostic = temporary / "diagnostic.json"
         subprocess.run(
             [str(binary), "--diagnose", "--report", str(diagnostic)],
@@ -80,23 +95,27 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                 request(
                     "/api/import",
                     {
-                        "title": "Security Engineer",
+                        "title": "Platform Engineer",
                         "company": "Fictional Smoke Employer",
                         "url": "https://example.com/careers/jobpilot-smoke",
-                        "description": "AWS Python cloud security IAM monitoring automation.",
+                        "description": "Build AWS test environments, Python automation, GitHub Actions release pipelines, monitoring, Linux operations, and incident response.",
                     },
                     dashboard_headers,
                 )
                 job_id = request("/api/state")["jobs"][0]["id"]
                 request(f"/api/jobs/{job_id}/prepare", {}, dashboard_headers)
-                deadline = time.monotonic() + 90
+                deadline = time.monotonic() + 180
                 while True:
                     job = request("/api/state")["jobs"][0]
-                    if job.get("documents", {}).get("resume_pdf"):
+                    if job.get("documents", {}).get("resumeforge_pdf"):
                         break
                     if time.monotonic() >= deadline:
-                        raise RuntimeError(f"Frozen document preparation did not complete: {job}")
+                        raise RuntimeError(
+                            f"Frozen ResumeForge preparation did not complete: {job}"
+                        )
                     time.sleep(0.5)
+                assert not job["documents"].get("resumeforge_cover_pdf")
+                assert Path(job["documents"]["resumeforge_pdf"]).name == "Alnajjar_Resume.pdf"
                 extension_id = "a" * 32
                 code = request(
                     "/api/extension/pairing", {"extension_id": extension_id}, dashboard_headers

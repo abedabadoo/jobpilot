@@ -43,10 +43,13 @@ def extension_api_server(tmp_path, monkeypatch):
     import jobpilot.service as service
 
     service = importlib.reload(service)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     service.store.set(
         "profile", {**PROFILE, "first_name": "Imported", "password": "must-not-export"}
     )
-    document = tmp_path / "service" / "applications" / "fixture" / "fictional.pdf"
+    document = (
+        tmp_path / "Downloads" / "JobPilot RF Docs" / "Fictional Co - Engineer" / "fictional.pdf"
+    )
     document.parent.mkdir(parents=True)
     document.write_bytes(b"%PDF-1.4 fictional prepared resume")
     job = service.store.add_job(
@@ -54,7 +57,7 @@ def extension_api_server(tmp_path, monkeypatch):
             "url": "https://example.test/jobs/fixture",
             "company": "Fictional Co",
             "title": "Engineer",
-            "documents": {"resume_pdf": str(document)},
+            "documents": {"resumeforge_pdf": str(document)},
         }
     )
     seen = []

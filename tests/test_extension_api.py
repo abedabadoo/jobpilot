@@ -5,6 +5,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ def api(tmp_path, monkeypatch):
     import jobpilot.service as service
 
     service = importlib.reload(service)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     return TestClient(service.app), service
 
 
@@ -131,12 +133,12 @@ def test_native_and_same_origin_dashboard_reads_continue_to_work(api):
 def test_post_read_aliases_keep_strict_origin_bearer_and_empty_body_support(api, tmp_path):
     client, service = api
     connection = pair(client, service)
-    root = tmp_path / "applications"
-    root.mkdir()
+    root = tmp_path / "Downloads" / "JobPilot RF Docs" / "Example - Engineer"
+    root.mkdir(parents=True)
     resume = root / "resume.pdf"
     resume.write_bytes(b"%PDF-test")
     job = service.store.add_job(
-        {"url": "https://example.com/post-read", "documents": {"resume_pdf": str(resume)}}
+        {"url": "https://example.com/post-read", "documents": {"resumeforge_pdf": str(resume)}}
     )
     for path in [
         "/api/extension/profile",
@@ -405,16 +407,16 @@ def test_pair_rate_limit_covers_rolling_minute_across_clock_bucket_boundary(api,
 def test_documents_list_and_download_exclude_private_or_oversized_paths(api, tmp_path):
     client, service = api
     connection = pair(client, service)
-    root = tmp_path / "applications" / "1"
+    root = tmp_path / "Downloads" / "JobPilot RF Docs" / "Example - Engineer"
     root.mkdir(parents=True)
     resume = root / "Resume.pdf"
     resume.write_bytes(b"%PDF-safe-resume")
     secret = tmp_path / "receipts" / "receipt.pdf"
     secret.parent.mkdir()
     secret.write_bytes(b"private-receipt")
-    huge = root / "big.docx"
+    huge = root / "big.pdf"
     with huge.open("wb") as stream:
-        stream.truncate(5 * 1024 * 1024 + 1)
+        stream.truncate(15 * 1024 * 1024 + 1)
     text = root / "secret.txt"
     text.write_text("private")
     job = service.store.add_job(
@@ -423,8 +425,8 @@ def test_documents_list_and_download_exclude_private_or_oversized_paths(api, tmp
             "title": "Engineer",
             "company": "Example",
             "documents": {
-                "resume_pdf": str(resume),
-                "cover_pdf": str(secret),
+                "resumeforge_pdf": str(resume),
+                "resumeforge_cover_pdf": str(secret),
                 "resume_docx": str(huge),
                 "cover_docx": str(text),
                 "evidence": str(secret),
@@ -461,7 +463,7 @@ def test_documents_list_and_download_exclude_private_or_oversized_paths(api, tmp
         client.get(
             f"/api/extension/documents/{job['id']}/resume_docx", headers=auth(connection)
         ).status_code
-        == 413
+        == 404
     )
 
 
@@ -472,15 +474,15 @@ def test_stored_symlink_document_cannot_escape_applications(api, tmp_path):
     private_dir.mkdir()
     private = private_dir / "resume.pdf"
     private.write_bytes(b"private")
-    root = tmp_path / "applications"
-    root.mkdir()
+    root = tmp_path / "Downloads" / "JobPilot RF Docs"
+    root.mkdir(parents=True)
     link = root / "linked"
     directory_link(link, private_dir)
     job = service.store.add_job(
         {
             "url": "https://example.com/link",
             "title": "Engineer",
-            "documents": {"resume_pdf": str(link / "resume.pdf")},
+            "documents": {"resumeforge_pdf": str(link / "resume.pdf")},
         }
     )
     assert client.get("/api/extension/documents", headers=auth(connection)).json() == {
@@ -511,13 +513,14 @@ def test_applications_root_link_cannot_expose_receipts(api, tmp_path):
     receipts = tmp_path / "receipts"
     receipts.mkdir()
     (receipts / "receipt.pdf").write_bytes(b"private receipt")
-    root = tmp_path / "applications"
+    root = tmp_path / "Downloads" / "JobPilot RF Docs"
+    root.parent.mkdir(parents=True)
     directory_link(root, receipts)
     job = service.store.add_job(
         {
             "url": "https://example.com/root-link",
             "title": "Engineer",
-            "documents": {"resume_pdf": str(root / "receipt.pdf")},
+            "documents": {"resumeforge_pdf": str(root / "receipt.pdf")},
         }
     )
     assert client.get("/api/extension/documents", headers=auth(connection)).json() == {

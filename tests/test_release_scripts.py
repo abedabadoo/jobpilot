@@ -80,7 +80,7 @@ def test_mac_builder_archives_app_with_ditto_and_no_python_runtime_dependency(
 ):
     builder = mac_builder()
     monkeypatch.setattr(builder.sys, "platform", "darwin")
-    monkeypatch.setattr(builder.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(builder.platform, "machine", lambda: "x86_64")
     calls = []
 
     def run(command, **kwargs):
@@ -94,7 +94,7 @@ def test_mac_builder_archives_app_with_ditto_and_no_python_runtime_dependency(
 
     monkeypatch.setattr(builder.subprocess, "run", run)
     archive = builder.build(tmp_path / "release")
-    assert archive == tmp_path / "release/JobPilot-arm64.app.zip"
+    assert archive == tmp_path / "release/JobPilot-x86_64.app.zip"
     assert archive.is_file()
     assert any(command[:4] == ["ditto", "-c", "-k", "--sequesterRsrc"] for command in calls)
     assert not any("pip" in command for command in calls)

@@ -17,19 +17,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 PREFIX = "/api/extension/"
 MAX_BODY = 4096
-MAX_DOCUMENT = 5 * 1024 * 1024
+MAX_DOCUMENT = 15 * 1024 * 1024
 DOCUMENT_TYPES = {
     "resume_pdf": (".pdf", "application/pdf"),
-    "resume_docx": (
-        ".docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ),
     "cover_pdf": (".pdf", "application/pdf"),
-    "cover_docx": (
-        ".docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ),
 }
+DOCUMENT_KEYS = {"resume_pdf": "resumeforge_pdf", "cover_pdf": "resumeforge_cover_pdf"}
 TEXT_FIELDS = (
     "name first_name last_name email phone location address_line1 address_line2 city state "
     "postal_code country linkedin website github portfolio current_employer current_title "
@@ -130,8 +123,7 @@ class ExtensionAPI:
         if path == PREFIX + "pair":
             return ("POST",), False
         if path in (PREFIX + "profile", PREFIX + "documents") or re.fullmatch(
-            re.escape(PREFIX)
-            + r"documents/[1-9][0-9]*/(?:resume_pdf|resume_docx|cover_pdf|cover_docx)",
+            re.escape(PREFIX) + r"documents/[1-9][0-9]*/(?:resume_pdf|cover_pdf)",
             path,
         ):
             return ("GET", "POST"), False
@@ -323,21 +315,23 @@ class ExtensionAPI:
         if kind not in DOCUMENT_TYPES:
             raise HTTPException(404, "Prepared document not found.")
         documents = job.get("documents")
-        value = documents.get(kind) if isinstance(documents, dict) else None
+        value = documents.get(DOCUMENT_KEYS[kind]) if isinstance(documents, dict) else None
         if not isinstance(value, str) or not value or "\x00" in value:
             raise HTTPException(404, "Prepared document not found.")
         try:
-            applications = self.data.resolve() / "applications"
-            base = applications.resolve()
+            raw_base = Path.home() / "Downloads" / "JobPilot RF Docs"
+            if raw_base.is_symlink() or raw_base.is_junction():
+                raise HTTPException(403, "Document folder is redirected.")
+            base = raw_base.resolve()
             target = Path(value).resolve()
-            if base != applications or not target.is_relative_to(base):
+            if not target.is_relative_to(base) or Path(value).is_symlink():
                 raise HTTPException(403, "Document is outside prepared applications.")
             if target.suffix.lower() != DOCUMENT_TYPES[kind][0]:
                 raise HTTPException(403, "Unsupported document file.")
             if not target.is_file():
                 raise HTTPException(404, "Prepared document is missing.")
             if target.stat().st_size > MAX_DOCUMENT:
-                raise HTTPException(413, "Documents must be 5 MiB or smaller.")
+                raise HTTPException(413, "Documents must be 15 MiB or smaller.")
             return target
         except (OSError, RuntimeError, ValueError) as exc:
             raise HTTPException(404, "Prepared document is unavailable.") from exc

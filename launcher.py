@@ -419,6 +419,12 @@ def diagnostic(paths: dict, data: Path) -> dict:
 
 
 def main() -> int:
+    if "--resumeforge-child" in sys.argv[1:]:
+        sys.argv.remove("--resumeforge-child")
+        os.environ["RESUMEFORGE_COMBINED"] = "1"
+        from resumeforge.desktop import main as forge_main
+
+        return forge_main()
     if "--service-child" in sys.argv[1:]:
         sys.argv.remove("--service-child")
         from jobpilot.service import main as service_main
