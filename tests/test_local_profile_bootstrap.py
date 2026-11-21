@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from jobpilot.local_profile import adopt_local_profile, read_local_profile
 
 
@@ -117,3 +119,45 @@ def test_missing_master_keeps_fictional_seed(tmp_path):
         encoding="utf-8",
     )
     assert read_local_profile(master) is None
+
+
+def test_interrupted_initial_rescore_retries_without_partial_profile_commit(tmp_path):
+    class InterruptingStore:
+        def __init__(self):
+            self.values = {"profile": {"sample_profile": True, "name": "Jordan Morgan"}}
+            self.rows = [
+                {"id": 1, "title": "Security Engineer", "status": "queued", "fit": 15},
+                {"id": 2, "title": "Cloud Security Engineer", "status": "queued", "fit": 15},
+            ]
+            self.fail_second_update = True
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        def set(self, key, value):
+            self.values[key] = value
+
+        def jobs(self):
+            return self.rows
+
+        def update_job(self, job_id, **changes):
+            if job_id == 2 and self.fail_second_update:
+                self.fail_second_update = False
+                raise OSError("Simulated temporary SQLite resource exhaustion")
+            next(row for row in self.rows if row["id"] == job_id).update(changes)
+
+        def event(self, message):
+            pass
+
+    store = InterruptingStore()
+    score = lambda job, profile, settings: 90
+    with pytest.raises(OSError, match="temporary SQLite"):
+        adopt_local_profile(store, _draft(tmp_path), score, {"min_fit": 40})
+    assert store.get("profile")["sample_profile"] is True
+    assert store.rows[0]["fit"] == 90
+    assert store.rows[1]["fit"] == 15
+
+    # A subsequent launch retries rather than incorrectly treating the import as complete.
+    assert adopt_local_profile(store, tmp_path / "master", score, {"min_fit": 40}) is True
+    assert store.get("profile")["sample_profile"] is False
+    assert [row["fit"] for row in store.rows] == [90, 90]
