@@ -150,7 +150,9 @@ def test_interrupted_initial_rescore_retries_without_partial_profile_commit(tmp_
             pass
 
     store = InterruptingStore()
-    score = lambda job, profile, settings: 90
+    def score(job, profile, settings):
+        return 90
+
     with pytest.raises(OSError, match="temporary SQLite"):
         adopt_local_profile(store, _draft(tmp_path), score, {"min_fit": 40})
     assert store.get("profile")["sample_profile"] is True
