@@ -155,7 +155,7 @@ def adopt_local_profile(store, master_dir: Path, score_job, settings: dict) -> b
     if candidate is None:
         return False
 
-    store.set("profile", candidate)
+    # Commit the profile LAST: interrupted rescoring can then retry safely.
     threshold = settings.get("min_fit", 40)
     for job in store.jobs():
         if job.get("status") in {
@@ -178,5 +178,6 @@ def adopt_local_profile(store, master_dir: Path, score_job, settings: dict) -> b
             changes.update(status="queued", note="")
         store.update_job(job["id"], **changes)
     store.set("fit_scoring_signature", "")
+    store.set("profile", candidate)
     store.event("JobPilot initialized its candidate profile from saved local ResumeForge data.")
     return True
