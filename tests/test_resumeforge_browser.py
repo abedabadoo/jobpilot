@@ -29,15 +29,15 @@ def test_role_opens_resumeforge_and_lists_its_checked_pdf(dashboard):
     page.route("**/api/jobs/1/resumeforge/**", forge_api)
     page.get_by_role("button", name="Review", exact=True).click()
     open_button = page.get_by_role("button", name="Open in ResumeForge", exact=True)
-    use_button = page.get_by_role("button", name="Use checked PDF", exact=True)
+    use_button = page.get_by_role("button", name="Sync ResumeForge PDFs", exact=True)
     expect(open_button).to_be_visible()
     expect(use_button).to_be_enabled()
     open_button.click()
     assert "open" in calls
     use_button.click()
     assert "use" in calls
-    expect(page.get_by_role("button", name="Open ResumeForge PDF", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="Open Resume PDF", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="Open Resume PDF", exact=True)).to_have_count(1)
 
 
 def test_changed_posting_hides_older_resumeforge_pdf(dashboard):
@@ -46,5 +46,4 @@ def test_changed_posting_hides_older_resumeforge_pdf(dashboard):
     job["documents"]["resumeforge_pdf"] = "C:/JobPilot-fixture/applications/older.pdf"
     job["resumeforge"] = {"current": False}
     page.get_by_role("button", name="Review", exact=True).click()
-    expect(page.get_by_role("button", name="Open ResumeForge PDF", exact=True)).to_have_count(0)
-    expect(page.get_by_role("button", name="Open Resume PDF", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="Open Resume PDF", exact=True)).to_have_count(0)

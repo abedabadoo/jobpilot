@@ -141,6 +141,7 @@ def test_live_verification_browser_blocks_cleanup(cleanup_api, monkeypatch):
     service, client, headers = cleanup_api
     from jobpilot import browser
 
+    service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     old = add(service, "old", 9)
     monkeypatch.setattr(browser, "login_in_progress", lambda: True)
     snapshot = preview(client)

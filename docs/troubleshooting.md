@@ -2,9 +2,9 @@
 
 ## A resume or cover letter needs updating
 
-Review the saved profile and the role's job description. Open **Review** to inspect extracted keywords, then regenerate the documents. Generation runs in the background; other roles and external links stay usable. Existing document versions remain on disk.
+Review the saved ResumeForge profile and the role's job description. Open **Review** to inspect JobPilot's quick keyword view, then open the role in ResumeForge to inspect its contextual priorities and regenerate the resume. Generation runs in the background; other roles and external links stay usable. Existing role-workspace revisions remain on disk.
 
-The resume contains saved experience plus a tailored skills section. New job terms can appear in the skills and cover-letter draft even when they are absent from the saved profile. Review the exports and edit them before applying.
+ResumeForge owns the tailored experience, skills, page fitting, and final PDF. Cover letters are optional and must be created explicitly after a checked resume exists; JobPilot never creates one automatically.
 
 ## Opening a job link
 
@@ -24,7 +24,7 @@ LinkedIn may rate limit public searches. JobPilot keeps available cards, pauses 
 
 Open **Problems** for a plain-language explanation and a link to the affected role. Import the public employer posting when a board omits the description or blocks a fetch. Resolve a problem after addressing it. Technical diagnostics remain in local logs for development.
 
-Local-model failures use deterministic fact ranking rather than preventing document preparation. Check Ollama and the configured model if you want local ranking restored.
+If a high-fit role says **Setup required**, open **ResumeForge profile** and save a source profile and model choice. Offline mode remains available. For a configured model, test its endpoint from ResumeForge's model settings; JobPilot deliberately does not start or poll a separate model service. Transient generation failures retry with a bounded delay, while content or review failures remain available in the editor for correction.
 
 ## Tracking applications
 
@@ -34,9 +34,9 @@ Automatic submission and remote access are dormant. Older enabled preferences do
 
 ## Desktop or local service will not start
 
-Run `JobPilot.exe --diagnose --report diagnosis.json`, or run the source launcher with the same options. The diagnostic report contains local paths, so review it before sharing. Check `logs/desktop.log`, `logs/service.err.log`, and `logs/ollama.err.log` under the data directory.
+Run `JobPilot.exe --diagnose --report diagnosis.json`, or run the source launcher with the same options. The diagnostic report contains local paths, so review it before sharing. Check `logs/desktop.log` and `logs/service.err.log` under the JobPilot data directory. A configured ResumeForge local runtime writes its own server log under the ResumeForge application-support directory.
 
-Only run one copy at a time. The launcher reuses services on ports `8765` and `11436`. Back up the data directory and repair code using the original data path rather than deleting application history.
+Only run one copy at a time. The launcher reuses the loopback service on port `8765`. Back up the data directory and repair code using the original data path rather than deleting application history.
 
 ## Removing jobs
 

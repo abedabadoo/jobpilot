@@ -8,7 +8,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import threading
 import time
@@ -19,7 +18,6 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -27,17 +25,13 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, resumeforge_bridge
 from .assets import asset_directory
+from .autofill import ExtensionAPI
 from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
-from .documents import local_endpoint, prepare
-from .remote_runtime import RemoteRuntime
+from .platforms import SystemSleepInhibitor, application_data_dir
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = Path(
-    os.environ.get(
-        "JOBPILOT_DATA_DIR", str(Path(os.environ.get("LOCALAPPDATA", ROOT)) / "JobPilot")
-    )
-).resolve()
+DATA = application_data_dir()
 DATA.mkdir(parents=True, exist_ok=True)
 store = Store(DATA / "jobpilot.sqlite")
 seed = json.loads((ROOT / "jobpilot/candidate.json").read_text(encoding="utf-8"))
@@ -47,7 +41,14 @@ DEFAULTS = {
         "Cloud Security Engineer",
         "Information Security Analyst",
         "GRC Analyst",
+        "GRC Engineer",
         "Security Analyst",
+        "SOC Analyst",
+        "Security Advisor",
+        "DevOps Engineer",
+        "Cloud Engineer",
+        "Platform Engineer",
+        "Forward Deployed Engineer",
     ],
     "location": "Cincinnati, OH",
     "remote": True,
@@ -60,21 +61,26 @@ DEFAULTS = {
     "startup": False,
     "remote_intervention_enabled": False,
     "intervention_timeout_seconds": 28800,
-    "ollama_url": "http://127.0.0.1:11436",
-    "model": "qwen3.5:9b",
-    "sources": ["linkedin", "indeed"],
-    "results_per_source": 12,
-    "hours_old": 168,
+    "sources": ["indeed"],
+    "results_per_source": 50,
+    "hours_old": 72,
+    "greenhouse_discovery": True,
     "ats_boards": [
         {"source": "greenhouse", "board": "cloudflare"},
         {"source": "greenhouse", "board": "datadog"},
+        {"source": "greenhouse", "board": "cobaltio"},
+        {"source": "greenhouse", "board": "guidepointsecurity"},
+        {"source": "greenhouse", "board": "calahealth"},
     ],
 }
 for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]:
     if store.get(key) is None:
         store.set(key, default)
 stored_preferences = store.get("settings", {})
-if stored_preferences.get("application_mode") != "legacy":
+if (
+    os.environ.get("JOBPILOT_COMBINED") == "1"
+    or stored_preferences.get("application_mode") != "legacy"
+):
     stored_preferences.update(
         application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
     )
@@ -84,7 +90,53 @@ if os.environ.get("JOBPILOT_DESKTOP_EXE"):
 TOKEN = store.get("_session_token") or secrets.token_urlsafe(32)
 store.set("_session_token", TOKEN)
 stop_event = threading.Event()
-remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
+sleep_inhibitor = SystemSleepInhibitor()
+
+
+class _CombinedRemoteBroker:
+    def list_cases(self):
+        return []
+
+    def pause(self, *_args, **_kwargs):
+        raise RuntimeError("Remote application control is unavailable in the combined app.")
+
+
+class _CombinedRemoteRuntime:
+    """Small disabled facade for builds that never ship browser automation."""
+
+    auth = None
+
+    def __init__(self):
+        self.broker = _CombinedRemoteBroker()
+
+    def status(self):
+        return {
+            "starting": False,
+            "listening": False,
+            "error": "",
+            "gateway": {"running": False, "url": "", "error": ""},
+            "waiting": 0,
+            "notifications": {"subscribed_devices": 0},
+        }
+
+    def start_async(self):
+        return None
+
+    def stop(self):
+        return None
+
+    def pairing_link(self):
+        return ""
+
+
+if os.environ.get("JOBPILOT_COMBINED") == "1":
+    remote_runtime = _CombinedRemoteRuntime()
+else:
+    # Kept for source-only legacy regression coverage. Native combined builds
+    # exclude this optional browser-control stack entirely.
+    from .remote_runtime import RemoteRuntime
+
+    remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
 search_requested = threading.Event()
 discovery_lock = threading.Lock()
 application_lock = threading.RLock()
@@ -100,14 +152,29 @@ worker = {
     "current": None,
     "last_search": store.get("last_search"),
     "last_error": None,
-    "model_status": "Checking local model",
     "email_status": "Not configured",
 }
+
+AUTO_RESUME_MIN_FIT = 80.0
+AUTO_RESUME_MAX_RETRIES = 3
+AUTO_RESUME_RETRY_BASE_SECONDS = 30
+
+
+def _resume_attempt_count(value) -> int:
+    """Normalize persisted retry state so a damaged row cannot stop the queue."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def settings():
     conf = {**DEFAULTS, **store.get("settings", {}), "data_dir": str(DATA)}
-    if conf.get("application_mode") != "legacy":
+    try:
+        conf["min_fit"] = max(0, min(int(AUTO_RESUME_MIN_FIT), int(conf["min_fit"])))
+    except (KeyError, TypeError, ValueError):
+        conf["min_fit"] = DEFAULTS["min_fit"]
+    if os.environ.get("JOBPILOT_COMBINED") == "1" or conf.get("application_mode") != "legacy":
         conf.update(
             application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
         )
@@ -276,6 +343,9 @@ def discover_once():
     conf = settings()
     conf["search_titles"] = conf["target_roles"]
     conf["locations"] = [conf["location"]]
+    conf["_greenhouse_cursor"] = store.get("greenhouse_cursor", 0)
+    conf["_greenhouse_learned_boards"] = store.get("greenhouse_learned_boards", [])
+    conf["_search_title_cursor"] = store.get("search_title_cursor", 0)
     profile = store.get("profile")
     email_revision = store.get("_email_config_revision", 0)
     count_keys = ["checked", "imported", "existing", "filtered", "removed"]
@@ -295,6 +365,36 @@ def discover_once():
 
     try:
         existing_jobs = store.jobs()
+        fit_signature = sha256(
+            json.dumps(
+                {
+                    "version": 2,
+                    "roles": conf["target_roles"],
+                    "skills": profile.get("skills", []),
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        if store.get("fit_scoring_signature") != fit_signature:
+            for existing in existing_jobs:
+                if (
+                    existing.get("status") in ("queued", "needs_review", "review_required")
+                    and len(str(existing.get("description", ""))) >= 80
+                ):
+                    updated_fit = score_job(existing, profile, conf)
+                    if updated_fit != existing.get("fit"):
+                        store.update_job(existing["id"], fit=updated_fit)
+            store.set("fit_scoring_signature", fit_signature)
+            existing_jobs = store.jobs()
+        known_greenhouse = set(conf["_greenhouse_learned_boards"])
+        for existing in existing_jobs:
+            for route in ("url", "source_url", "apply_url"):
+                slug = collectors._greenhouse_slug(existing.get(route))
+                if slug:
+                    known_greenhouse.add(slug)
+        conf["_greenhouse_learned_boards"] = sorted(known_greenhouse)
+        if len(known_greenhouse) > len(store.get("greenhouse_learned_boards", [])):
+            store.set("greenhouse_learned_boards", conf["_greenhouse_learned_boards"])
         existing_ids = {job["id"] for job in existing_jobs}
         email_routes = {
             canonical_url(existing[key])
@@ -326,6 +426,16 @@ def discover_once():
             else:
                 row["existing"] += 1
         details = getattr(collectors, "get_last_search_result", lambda: {})()
+        if details.get("greenhouse_next_cursor") is not None:
+            store.set("greenhouse_cursor", details["greenhouse_next_cursor"])
+        if details.get("search_title_next_cursor") is not None:
+            store.set("search_title_cursor", details["search_title_next_cursor"])
+        learned = details.get("greenhouse_learned_boards") or []
+        if learned:
+            store.set(
+                "greenhouse_learned_boards",
+                sorted(set(conf["_greenhouse_learned_boards"]) | set(learned)),
+            )
         for detail in details.get("sources", []):
             row = source_row(detail.get("source"))
             row.update({key: value for key, value in detail.items() if key not in count_keys})
@@ -419,85 +529,136 @@ def discovery_loop():
             discover_once()
 
 
+def _failed_resume_result(job: dict, workspace: str, result: dict | None = None) -> dict:
+    """Add bounded retry state to an engine or exception failure."""
+    previous = job.get("resumeforge") if isinstance(job.get("resumeforge"), dict) else {}
+    attempts = (
+        _resume_attempt_count(previous.get("attempts")) + 1
+        if previous.get("workspace") == workspace
+        else 1
+    )
+    retry_after = None
+    if attempts < AUTO_RESUME_MAX_RETRIES:
+        delay = AUTO_RESUME_RETRY_BASE_SECONDS * (2 ** (attempts - 1))
+        retry_after = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+    return {
+        **(result or {}),
+        "status": "failed",
+        "workspace": workspace,
+        "attempts": attempts,
+        "retry_after": retry_after,
+    }
+
+
 def prepare_job(job_id, preserve_review=False):
     with application_lock:
         if stop_event.is_set():
             return
-        with store.lock:
-            job = store.get_job(job_id)
-            assist_mode = settings()["application_mode"] == "assist"
-            if (
-                not job
-                or (job.get("uncertain") and not assist_mode)
-                or _manual_handoff_active(job)
-                or (job.get("review_session") or {}).get("state") in ["opening", "opened"]
-                or (assist_mode and job["status"] == "preparing")
-                or job["status"]
-                in ["confirmed", "manually_verified", "applying", "submitting", "skipped"]
-            ):
-                return
-            preserve_review = preserve_review or job["status"] == "needs_review"
-            prior_status = job.get("preparation_prior_status") or job["status"]
-            review_note = (
-                (job.get("preparation_prior_note") or job.get("note", ""))
-                if preserve_review
-                else ""
-            )
-            worker["current"] = job["title"]
-            store.update_job(
-                job_id,
-                status="preparing",
-                preparation_prior_status=prior_status,
-                preparation_prior_note=review_note,
-                preparation_requested=False,
-                note="Selecting verified career facts and creating application documents.",
-            )
+        job = store.get_job(job_id)
+        if (
+            not job
+            or (job.get("applied") and not job.get("preparation_requested"))
+            or (job.get("uncertain") and settings()["application_mode"] != "assist")
+            or _manual_handoff_active(job)
+            or (job.get("review_session") or {}).get("state") in ("opening", "opened")
+            or job["status"] in ("skipped", "confirmed", "manually_verified", "preparing")
+            or job["status"] in ("applying", "submitting")
+        ):
+            return
+        prior_status = job.get("preparation_prior_status") or job["status"]
+        prior_note = job.get("preparation_prior_note") or job.get("note", "")
+        keep_review = preserve_review or prior_status == "needs_review"
+        keep_applied = job.get("applied") and prior_status == "applied"
+        worker["current"] = job["title"]
+        store.update_job(
+            job_id,
+            status="preparing",
+            preparation_requested=False,
+            preparation_prior_status=prior_status,
+            preparation_prior_note=prior_note,
+            note="ResumeForge is building the tailored resume.",
+        )
         try:
-            documents = prepare(job, store.get("profile"), DATA / "applications", settings())
-            final_status = (
-                "applied"
-                if job.get("applied") or prior_status == "applied"
-                else ("needs_review" if preserve_review else "prepared")
-            )
-            with store.lock:
-                current = store.get_job(job_id) or {}
-                current_documents = current.get("documents") or {}
-                if current_documents.get("resumeforge_pdf"):
-                    documents["resumeforge_pdf"] = current_documents["resumeforge_pdf"]
-                job = store.update_job(
-                    job_id,
-                    status=final_status,
-                    documents=documents,
-                    application={
-                        **(current.get("application") or {}),
-                        "documents": documents,
-                        "status": final_status,
-                        "note": documents["generation_note"],
-                    },
-                    note=review_note
-                    + " Application documents ready. "
-                    + documents["generation_note"],
-                    preparation_prior_status=None,
-                    preparation_prior_note=None,
+            result = resumeforge_bridge.build_resume(DATA, {**job, "keywords": job_keywords(job)})
+            if result["status"] == "ready":
+                documents = {"resumeforge_pdf": result["path"]}
+                current = store.get_job(job_id)
+                application = current.get("application")
+                extra = (
+                    {"application": {**application, "documents": documents}}
+                    if isinstance(application, dict)
+                    else {}
                 )
-            store.event(
-                f"Prepared {job['title']} at {job.get('company', '')} using {documents['generation_mode']} selection."
-            )
-            return job
+                store.update_job(
+                    job_id,
+                    status="applied"
+                    if keep_applied
+                    else "needs_review"
+                    if keep_review
+                    else "prepared",
+                    documents=documents,
+                    resumeforge=result,
+                    **extra,
+                    note=(prior_note + " ResumeForge resume is ready.").strip()
+                    if keep_review
+                    else "ResumeForge resume is ready.",
+                )
+                store.event(f"ResumeForge resume ready for {job['title']} at {job['company']}.")
+            else:
+                if result["status"] == "failed":
+                    workspace = str(
+                        result.get("workspace") or resumeforge_bridge.workspace_path(DATA, job).name
+                    )
+                    result = _failed_resume_result(job, workspace, result)
+                store.update_job(
+                    job_id,
+                    status="needs_review",
+                    documents={},
+                    resumeforge=result,
+                    note=(prior_note + " ResumeForge needs a revision before export.").strip(),
+                )
         except Exception as exc:
+            try:
+                workspace = resumeforge_bridge.workspace_path(DATA, job).name
+            except (TypeError, ValueError):
+                workspace = ""
+            setup_required = isinstance(exc, (FileNotFoundError, ValueError)) and (
+                "profile" in str(exc).casefold() or "model settings" in str(exc).casefold()
+            )
+            failure = _failed_resume_result(job, workspace)
             store.update_job(
                 job_id,
-                status="error",
-                note="Documents could not be prepared. See Problems for this job.",
+                status="needs_review",
+                documents={},
+                resumeforge={
+                    "status": "setup_required" if setup_required else "failed",
+                    "workspace": workspace,
+                    "attempts": 0 if setup_required else failure["attempts"],
+                    "retry_after": None if setup_required else failure["retry_after"],
+                    **(
+                        {"master_revision": resumeforge_bridge.master_revision()}
+                        if setup_required
+                        else {}
+                    ),
+                },
+                note=(
+                    prior_note
+                    + (
+                        " Save your ResumeForge profile; this resume will start automatically afterward."
+                        if setup_required
+                        else " ResumeForge could not finish this resume. Open the role to retry."
+                    )
+                ).strip(),
             )
             report_error(
-                "Documents could not be prepared for this job. Check the profile and try again.",
+                "ResumeForge could not finish this document.",
                 category="documents",
                 job=job,
                 detail=f"{type(exc).__name__}: {exc}",
             )
         finally:
             worker["current"] = None
+        return store.get_job(job_id)
 
 
 def apply_job(job_id):
@@ -678,6 +839,54 @@ def apply_job(job_id):
             worker["current"] = None
 
 
+def _automatic_resume_due(job: dict, *, now: datetime | None = None) -> bool:
+    """Return whether an unchanged 80%+ role needs one serialized build.
+
+    Successful and editorially blocked runs are stable. A changed posting gets
+    a new workspace and therefore one new build. Transient failures retry with
+    a short bound; missing first-run profile data waits without burning CPU and
+    becomes eligible as soon as the ResumeForge profile is saved.
+    """
+
+    try:
+        if float(job.get("fit") or 0) < AUTO_RESUME_MIN_FIT:
+            return False
+        expected_workspace = resumeforge_bridge.workspace_path(DATA, job).name
+    except (TypeError, ValueError):
+        return False
+    forge = job.get("resumeforge")
+    if not isinstance(forge, dict) or forge.get("workspace") != expected_workspace:
+        return True
+    status = forge.get("status")
+    if status == "ready":
+        path = (job.get("documents") or {}).get("resumeforge_pdf")
+        digest = str(forge.get("sha256") or "")
+        return not (
+            isinstance(path, str) and digest and resumeforge_bridge.checked_copy(path, digest, DATA)
+        )
+    if status == "setup_required":
+        # Retry only after the user actually changes their saved master draft.
+        # An existing but incomplete draft must not trigger a build every loop.
+        revision = resumeforge_bridge.master_revision()
+        return bool(revision and revision != forge.get("master_revision"))
+    if status != "failed":
+        # needs_content and needs_review require editorial input, not a hot loop.
+        return False
+    attempts = _resume_attempt_count(forge.get("attempts"))
+    if attempts >= AUTO_RESUME_MAX_RETRIES:
+        return False
+    retry_after = forge.get("retry_after")
+    if not retry_after:
+        return True
+    try:
+        deadline = datetime.fromisoformat(str(retry_after).replace("Z", "+00:00"))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return True
+    return (now or datetime.now(timezone.utc)) >= deadline
+
+
 def process_document_queue():
     if stop_event.is_set():
         return None
@@ -707,8 +916,8 @@ def process_document_queue():
             (
                 row
                 for row in store.jobs()
-                if row["status"] == "queued"
-                and not row.get("documents")
+                if row["status"] in ("queued", "prepared", "needs_review")
+                and _automatic_resume_due(row)
                 and not row.get("uncertain")
                 and not row.get("applied")
                 and not _manual_handoff_active(row)
@@ -723,9 +932,13 @@ def process_document_queue():
 
 def application_loop():
     while not stop_event.wait(2):
-        if settings()["application_mode"] == "assist":
-            process_document_queue()
-        elif settings()["submission_enabled"]:
+        # Resume creation is independent of the deprecated application-mode
+        # switch. Every eligible role is handled by the same serialized
+        # ResumeForge queue, while form submission remains disabled in assist
+        # mode and is never required for a resume build.
+        if process_document_queue() is not None:
+            continue
+        if settings()["application_mode"] != "assist" and settings()["submission_enabled"]:
             job = next(
                 (
                     j
@@ -761,22 +974,14 @@ def health_loop():
                 ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(power))
                 awake = conf["keep_awake"] and power.ACLineStatus == 1
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001 if awake else 0x80000000)
-            with httpx.Client(timeout=3, trust_env=False) as client:
-                tags = (
-                    client.get(conf["ollama_url"].rstrip("/") + "/api/tags")
-                    .raise_for_status()
-                    .json()
-                )
-                names = {m.get("name") for m in tags.get("models", [])}
-                worker["model_status"] = (
-                    "qwen3.5:9b ready locally"
-                    if conf["model"] in names
-                    else "Local model download pending"
-                )
+            else:
+                sleep_inhibitor.set_enabled(bool(conf["keep_awake"]))
+                awake = bool(sleep_inhibitor.process and sleep_inhibitor.process.poll() is None)
         except Exception:
-            worker["model_status"] = (
-                "Local model service unavailable; verified template fallback active"
-            )
+            # Sleep inhibition is best effort. ResumeForge owns model startup
+            # and status, so the always-on JobPilot worker never polls or wakes
+            # a language-model service.
+            awake = False
         worker["keep_awake"] = awake
         worker["email_status"] = (
             "Configured" if conf.get("email", {}).get("enabled") else "Not configured"
@@ -784,6 +989,7 @@ def health_loop():
         stop_event.wait(20)
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+    sleep_inhibitor.close()
 
 
 @asynccontextmanager
@@ -830,6 +1036,7 @@ async def lifespan(app):
             remote_runtime.start_async()
     yield
     stop_event.set()
+    sleep_inhibitor.close()
     remote_runtime.stop()
 
 
@@ -837,12 +1044,32 @@ app = FastAPI(title="JobPilot", lifespan=lifespan, docs_url=None, redoc_url=None
 app.add_middleware(
     TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"]
 )
+extension_api = ExtensionAPI(store, DATA, TOKEN)
+app.include_router(extension_api.router)
 
 
 @app.middleware("http")
 async def local_security(request: Request, call_next):
+    if request.url.path.startswith("/api/extension/"):
+        return await extension_api.security(request, call_next)
     origin = request.headers.get("origin")
-    if origin and urlsplit(origin).hostname not in ["127.0.0.1", "localhost", "::1", "testserver"]:
+    # Extension host permissions can omit Origin on GET. Browser-controlled
+    # Fetch Metadata still distinguishes those fetches from dashboard requests.
+    # CLI/native requests without these headers remain supported.
+    if (
+        request.url.path.startswith("/api/")
+        and not origin
+        and request.headers.get("sec-fetch-site") is not None
+        and request.headers.get("sec-fetch-site") != "same-origin"
+        and request.headers.get("sec-fetch-mode") != "navigate"
+    ):
+        return JSONResponse(
+            {"detail": "Only the local dashboard may access this service."}, status_code=403
+        )
+    if origin and (
+        urlsplit(origin).scheme == "chrome-extension"
+        or urlsplit(origin).hostname not in ["127.0.0.1", "localhost", "::1", "testserver"]
+    ):
         return JSONResponse(
             {"detail": "Only the local dashboard may access this service."}, status_code=403
         )
@@ -953,13 +1180,14 @@ def control(body: dict):
     conf = store.get("settings", {})
     was_enabled = conf.get("search_enabled", False)
     if body.get("action") == "shutdown":
-        from . import browser
+        if settings()["application_mode"] != "assist":
+            from . import browser
 
-        if browser.login_in_progress():
-            raise HTTPException(
-                409,
-                "Close the JobPilot sign-in or verification browser before restarting the service.",
-            )
+            if browser.login_in_progress():
+                raise HTTPException(
+                    409,
+                    "Close the JobPilot sign-in or verification browser before restarting the service.",
+                )
         if (
             worker["searching"]
             or worker["submitting"]
@@ -1023,7 +1251,7 @@ def save_settings(body: dict):
     update = {k: v for k, v in body.items() if k in allowed}
     for key, low, high in [
         ("search_interval_minutes", 5, 1440),
-        ("min_fit", 0, 100),
+        ("min_fit", 0, int(AUTO_RESUME_MIN_FIT)),
         ("results_per_source", 1, 50),
         ("hours_old", 1, 720),
     ]:
@@ -1038,10 +1266,6 @@ def save_settings(body: dict):
         or any(not isinstance(x, str) for x in update["target_roles"])
     ):
         raise HTTPException(400, "Target roles must be a nonempty list of role names.")
-    if "ollama_url" in update and not local_endpoint(update["ollama_url"]):
-        raise HTTPException(400, "Inference must use a local HTTP Ollama endpoint.")
-    if "model" in update and update["model"] != "qwen3.5:9b":
-        raise HTTPException(400, "Only the installed local qwen3.5:9b model is enabled.")
     for key in ["remote", "search_enabled", "submission_enabled", "keep_awake", "startup"]:
         if key in update and not isinstance(update[key], bool):
             raise HTTPException(400, f"{key} must be true or false.")
@@ -1360,9 +1584,12 @@ def _cleanup_clock():
 
 
 def _cleanup_busy():
-    from . import browser
+    browser_busy = False
+    if settings()["application_mode"] != "assist":
+        from . import browser
 
-    if worker["submitting"] or worker["current"] or browser.login_in_progress():
+        browser_busy = browser.login_in_progress()
+    if worker["submitting"] or worker["current"] or browser_busy:
         return True
     if not application_lock.acquire(blocking=False):
         return True
@@ -1428,9 +1655,20 @@ def delete_old_jobs(body: dict):
 
 
 def _normal_browser_tab(url):
-    from . import browser
+    if settings()["application_mode"] == "assist":
+        from .links import open_external_url
 
-    result = browser.open_browser_tab(url)
+        try:
+            result = open_external_url(url)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                400,
+                "The job page could not be opened. Copy its public posting link into your browser.",
+            ) from exc
+    else:
+        from . import browser
+
+        result = browser.open_browser_tab(url)
     if result.get("status") != "opened":
         raise HTTPException(400, result.get("note") or "Could not open the default browser.")
     return result
@@ -1571,6 +1809,17 @@ def prepare_action(job_id: int):
         application_lock.release()
 
 
+@app.post("/api/resumeforge/profile/open")
+def open_resumeforge_profile():
+    try:
+        resumeforge_bridge.open_editor(
+            resumeforge_bridge.desktop_executable(), resumeforge_bridge.master_workspace()
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise HTTPException(503, "ResumeForge editor could not open.") from exc
+    return {"opened": True}
+
+
 @app.post("/api/jobs/{job_id}/resumeforge/open")
 def open_in_resumeforge(job_id: int):
     job = require_job(job_id)
@@ -1601,6 +1850,8 @@ def resumeforge_status(job_id: int):
     except ValueError:
         return {"status": "invalid", "attached": False}
     if not (workspace / "draft.json").is_file():
+        if (job.get("resumeforge") or {}).get("status") == "setup_required":
+            return {"status": "setup_required", "attached": False}
         return {"status": "not_opened", "attached": False}
     try:
         result = resumeforge_bridge.checked_run(workspace)
@@ -1620,78 +1871,53 @@ def resumeforge_status(job_id: int):
 @app.post("/api/jobs/{job_id}/resumeforge/use")
 @guard_job_mutation
 def use_resumeforge_pdf(job_id: int):
+    from resumeforge.desktop_support import export_checked
+
     job = require_job(job_id)
     try:
         workspace = resumeforge_bridge.workspace_path(DATA, job)
         resumeforge_bridge.validate_workspace(DATA, workspace)
         result = resumeforge_bridge.checked_run(workspace)
-    except FileNotFoundError as exc:
-        raise HTTPException(409, "Open this role in ResumeForge and build a resume first.") from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     if result["status"] != "ready":
-        raise HTTPException(
-            409, "The latest ResumeForge resume is not ready. Finish its checks there first."
-        )
-    existing = job.get("resumeforge") or {}
-    if existing.get("run_id") == result["run_id"] and existing.get("sha256") == result["sha256"]:
-        path = (job.get("documents") or {}).get("resumeforge_pdf")
-        if path and resumeforge_bridge.checked_copy(path, result["sha256"], DATA):
-            return {
-                "attached": True,
-                "already_attached": True,
-                "message": "ResumeForge PDF is already on this role.",
-            }
-
-    folder = DATA / "applications" / f"resumeforge-job-{job_id}-{result['run_id']}"
+        raise HTTPException(409, "Build and review the resume in ResumeForge first.")
     try:
-        resumeforge_bridge.validate_import_directory(DATA, folder)
+        destination = resumeforge_bridge.resume_destination(DATA, job)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / "resume.pdf"
-    if destination.is_symlink():
-        raise HTTPException(409, "The ResumeForge PDF destination is redirected.")
-    if destination.is_file():
-        if sha256(destination.read_bytes()).hexdigest() != result["sha256"]:
-            raise HTTPException(409, "The existing ResumeForge copy differs from its checked run.")
-    else:
-        temporary = folder / f".resume-{secrets.token_hex(8)}.pdf"
-        try:
-            shutil.copyfile(result["pdf"], temporary)
-            if sha256(temporary.read_bytes()).hexdigest() != result["sha256"]:
-                raise HTTPException(409, "The ResumeForge PDF changed while it was being imported.")
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-    with store.lock:
-        current = store.get_job(job_id)
-        if current is None:
-            raise HTTPException(404, "This opportunity is no longer available.")
-        application = dict(current.get("application") or {})
-        documents = {
-            **(application.get("documents") or {}),
-            **(current.get("documents") or {}),
-            "resumeforge_pdf": str(destination),
-        }
-        application["documents"] = documents
-        store.update_job(
-            job_id,
-            documents=documents,
-            application=application,
-            resumeforge={
-                "run_id": result["run_id"],
-                "sha256": result["sha256"],
-                "workspace": workspace.name,
-                "attached_at": store.now(),
-            },
-        )
-    store.event(f"Added a checked ResumeForge PDF for {job['title']} at {job['company']}.")
+    was_checked = resumeforge_bridge.checked_copy(str(destination), result["sha256"], DATA)
+    try:
+        export_checked(result["pdf"].parent, destination)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    documents = {"resumeforge_pdf": str(destination)}
+    cover = destination.parent / "Alnajjar_CoverLetter.pdf"
+    if cover.is_file() and cover.stat().st_size > 5 and cover.read_bytes()[:5] == b"%PDF-":
+        documents["resumeforge_cover_pdf"] = str(cover)
+    job = require_job(job_id)
+    already_attached = (
+        (job.get("resumeforge") or {}).get("run_id") == result["run_id"]
+        and job.get("documents") == documents
+        and was_checked
+    )
+    changes = {
+        "status": "needs_review" if job["status"] == "needs_review" else "prepared",
+        "documents": documents,
+        "resumeforge": {
+            "run_id": result["run_id"],
+            "sha256": result["sha256"],
+            "workspace": workspace.name,
+            "attached_at": store.now(),
+        },
+    }
+    if isinstance(job.get("application"), dict):
+        changes["application"] = {**job["application"], "documents": documents}
+    store.update_job(job_id, **changes)
     return {
         "attached": True,
-        "already_attached": False,
-        "message": "Checked ResumeForge PDF added to this role.",
+        "already_attached": already_attached,
+        "message": "ResumeForge PDF saved in JobPilot RF Docs.",
     }
 
 
@@ -1739,6 +1965,10 @@ def review_action(job_id: int, body: dict | None = None):
         return job_browser_tab(job_id, {"purpose": "application"})
     if mode not in ["isolated", "remote"]:
         raise HTTPException(400, "Choose default_browser, isolated or remote.")
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(
+            409, "The combined app uses your regular browser for application review."
+        )
     if mode == "remote" and not (
         settings()["remote_intervention_enabled"] and remote_runtime.status()["listening"]
     ):
@@ -1935,6 +2165,8 @@ def login(body: dict):
         return browser_tab(body)
     if mode != "isolated":
         raise HTTPException(400, "Choose default_browser or isolated.")
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(409, "The combined app uses your regular browser for sign-in.")
     from . import browser
 
     platform = body.get("platform", "employer")
@@ -2244,13 +2476,16 @@ def _artifact_target(path, *, document=False):
     if not isinstance(path, str) or not path.strip() or "\x00" in path:
         raise HTTPException(400, "Choose a generated document and try again.")
     target = Path(path).resolve()
-    allowed = [DATA / "applications", DATA / "receipts", DATA / "evidence"]
+    allowed = [
+        DATA / "applications",
+        DATA / "receipts",
+        DATA / "evidence",
+        Path.home() / "Downloads" / "JobPilot RF Docs",
+    ]
     if not any(target.is_relative_to(x.resolve()) for x in allowed):
         raise HTTPException(403, "Only generated application files can be accessed.")
-    if document and target.suffix.lower() not in {".pdf", ".docx"}:
-        raise HTTPException(
-            400, "Open supports PDF and Word documents. Use Download for other files."
-        )
+    if document and target.suffix.lower() != ".pdf":
+        raise HTTPException(400, "Open supports PDF documents.")
     if not target.is_file():
         raise HTTPException(404, "This file is missing. Regenerate the documents and try again.")
     return target

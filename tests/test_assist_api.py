@@ -47,6 +47,20 @@ def test_external_link_honors_the_visible_posting_target(assist, monkeypatch):
     assert opened == [job["url"]]
 
 
+def test_invalid_assist_browser_tab_is_a_controlled_error_without_job_mutation(assist):
+    service, client, headers = assist
+    job = add(service, url="http://127.0.0.1/private-job")
+    before = service.store.get_job(job["id"])
+    response = client.post(
+        f"/api/jobs/{job['id']}/browser-tab",
+        headers=headers,
+        json={"purpose": "posting"},
+    )
+    assert response.status_code == 400
+    assert "public posting link" in response.json()["detail"]
+    assert service.store.get_job(job["id"]) == before
+
+
 def test_undo_applied_before_queued_regeneration_does_not_resurrect_applied_state(
     assist, monkeypatch
 ):
@@ -58,12 +72,11 @@ def test_undo_applied_before_queued_regeneration_does_not_resurrect_applied_stat
     )
     service.store.mark_applied(job["id"], False)
     monkeypatch.setattr(
-        service,
-        "prepare",
+        service.resumeforge_bridge,
+        "build_resume",
         lambda *args: {
-            "resume_pdf": "new.pdf",
-            "generation_mode": "deterministic",
-            "generation_note": "Ready",
+            "status": "ready",
+            "path": "new.pdf",
         },
     )
     service.prepare_job(job["id"])
@@ -248,7 +261,11 @@ def test_document_request_queues_immediately_while_another_document_is_generatin
 def test_accepted_shutdown_stops_new_document_queue_work_immediately(assist, monkeypatch):
     service, client, headers = assist
     job = add(service, preparation_requested=True)
-    monkeypatch.setattr(service, "prepare", lambda *a, **k: pytest.fail("Service is stopping"))
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "build_resume",
+        lambda *a, **k: pytest.fail("Service is stopping"),
+    )
 
     response = client.post("/api/control", headers=headers, json={"action": "shutdown"})
 
@@ -285,13 +302,12 @@ def test_shutdown_stops_document_work_already_waiting_for_the_application_lock(a
     def prepare(*args, **kwargs):
         drafted.append(True)
         return {
-            "resume_pdf": "unexpected.pdf",
-            "generation_note": "Known facts",
-            "generation_mode": "deterministic",
+            "status": "ready",
+            "path": "unexpected.pdf",
         }
 
     monkeypatch.setattr(service.store, "jobs", select_jobs)
-    monkeypatch.setattr(service, "prepare", prepare)
+    monkeypatch.setattr(service.resumeforge_bridge, "build_resume", prepare)
     with service.application_lock:
         pending = threading.Thread(target=service.process_document_queue)
         pending.start()
@@ -308,33 +324,31 @@ def test_assist_document_worker_prepares_without_any_application_browser(assist,
     service, _, _ = assist
     from jobpilot import browser
 
-    job = add(service)
+    job = add(service, fit=80)
     monkeypatch.setattr(browser, "apply", lambda *a, **k: pytest.fail("No automated apply"))
     monkeypatch.setattr(
-        service,
-        "prepare",
+        service.resumeforge_bridge,
+        "build_resume",
         lambda *a, **k: {
-            "resume_pdf": "fixture.pdf",
-            "generation_note": "Known facts",
-            "generation_mode": "deterministic",
+            "status": "ready",
+            "path": "fixture.pdf",
         },
     )
     service.process_document_queue()
     current = service.store.get_job(job["id"])
     assert current["status"] == "prepared" and current["attempts"] == 0
-    assert current["documents"]["resume_pdf"] == "fixture.pdf"
+    assert current["documents"]["resumeforge_pdf"] == "fixture.pdf"
 
 
 def test_regenerating_manual_applied_documents_preserves_tracking(assist, monkeypatch):
     service, client, headers = assist
     job = add(service, status="applied", applied=True, applied_at=service.store.now())
     monkeypatch.setattr(
-        service,
-        "prepare",
+        service.resumeforge_bridge,
+        "build_resume",
         lambda *a, **k: {
-            "resume_pdf": "new.pdf",
-            "generation_note": "Known facts",
-            "generation_mode": "deterministic",
+            "status": "ready",
+            "path": "new.pdf",
         },
     )
     assert client.post(f"/api/jobs/{job['id']}/prepare", headers=headers).status_code == 200
@@ -342,7 +356,7 @@ def test_regenerating_manual_applied_documents_preserves_tracking(assist, monkey
     current = service.store.get_job(job["id"])
     assert current["status"] == "applied" and current["applied"] is True
     assert current["applied_at"] == job["applied_at"]
-    assert current["documents"]["resume_pdf"] == "new.pdf"
+    assert current["documents"]["resumeforge_pdf"] == "new.pdf"
 
 
 def test_explicit_uncertain_document_request_preserves_submission_history(assist, monkeypatch):
@@ -359,12 +373,11 @@ def test_explicit_uncertain_document_request_preserves_submission_history(assist
     )
     monkeypatch.setattr(service, "apply_job", lambda *a, **k: pytest.fail("No automated apply"))
     monkeypatch.setattr(
-        service,
-        "prepare",
+        service.resumeforge_bridge,
+        "build_resume",
         lambda *a, **k: {
-            "resume_pdf": "new.pdf",
-            "generation_note": "Known facts",
-            "generation_mode": "deterministic",
+            "status": "ready",
+            "path": "new.pdf",
         },
     )
 
@@ -375,7 +388,7 @@ def test_explicit_uncertain_document_request_preserves_submission_history(assist
 
     current = service.store.get_job(job["id"])
     assert current["status"] == "needs_review" and current["uncertain"] is True
-    assert current["documents"]["resume_pdf"] == "new.pdf"
+    assert current["documents"]["resumeforge_pdf"] == "new.pdf"
     assert current["attempts"] == 1
     assert current["submission_checkpoint_at"] == "2026-10-26T12:00:00Z"
     assert current["application"]["evidence"] == ["receipt-check.png"]
@@ -386,7 +399,11 @@ def test_explicit_uncertain_document_request_preserves_submission_history(assist
 def test_uncertain_jobs_require_an_explicit_document_request(assist, monkeypatch):
     service, _, _ = assist
     job = add(service, uncertain=True)
-    monkeypatch.setattr(service, "prepare", lambda *a, **k: pytest.fail("No implicit drafting"))
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "build_resume",
+        lambda *a, **k: pytest.fail("No implicit drafting"),
+    )
     service.process_document_queue()
     current = service.store.get_job(job["id"])
     assert current["status"] == "queued" and current["uncertain"] is True
@@ -397,7 +414,11 @@ def test_legacy_uncertain_document_requests_remain_held(assist, monkeypatch):
     service, client, headers = assist
     service.store.set("settings", {**service.settings(), "application_mode": "legacy"})
     job = add(service, status="needs_review", uncertain=True, preparation_requested=True)
-    monkeypatch.setattr(service, "prepare", lambda *a, **k: pytest.fail("Legacy receipt is held"))
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "build_resume",
+        lambda *a, **k: pytest.fail("Legacy receipt is held"),
+    )
     assert (
         client.post(f"/api/jobs/{job['id']}/prepare", headers=headers, json={}).status_code == 409
     )
@@ -422,7 +443,11 @@ def test_legacy_uncertain_document_requests_remain_held(assist, monkeypatch):
 def test_uncertain_document_drafting_waits_for_active_work(assist, monkeypatch, active_work):
     service, client, headers = assist
     job = add(service, uncertain=True, preparation_requested=True, **active_work)
-    monkeypatch.setattr(service, "prepare", lambda *a, **k: pytest.fail("Active work is held"))
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "build_resume",
+        lambda *a, **k: pytest.fail("Active work is held"),
+    )
     assert (
         client.post(f"/api/jobs/{job['id']}/prepare", headers=headers, json={}).status_code == 409
     )
@@ -439,14 +464,13 @@ def test_a_blocked_document_request_does_not_starve_other_jobs(assist, monkeypat
         browser_handoff={"mode": "default_browser", "state": "opened"},
         preparation_requested=True,
     )
-    available = add(service, "available")
+    available = add(service, "available", fit=80)
     monkeypatch.setattr(
-        service,
-        "prepare",
+        service.resumeforge_bridge,
+        "build_resume",
         lambda *a, **k: {
-            "resume_pdf": "ready.pdf",
-            "generation_note": "Known facts",
-            "generation_mode": "deterministic",
+            "status": "ready",
+            "path": "ready.pdf",
         },
     )
     service.process_document_queue()
@@ -461,7 +485,7 @@ def test_document_failure_becomes_persistent_plain_language_problem(assist, monk
     def failed(*args, **kwargs):
         raise RuntimeError(r"SECRET_TOKEN failed at C:\\private\\resume.pdf")
 
-    monkeypatch.setattr(service, "prepare", failed)
+    monkeypatch.setattr(service.resumeforge_bridge, "build_resume", failed)
     service.prepare_job(job["id"])
     response = client.get("/api/problems")
     assert response.status_code == 200

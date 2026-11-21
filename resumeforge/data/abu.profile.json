@@ -1,0 +1,41 @@
+{
+  "name": "Morgan Example",
+  "contact": "morgan@example.invalid | Remote | example.invalid/morgan",
+  "roles": [
+    {
+      "id": "platform",
+      "company": "Signal Orchard Studio",
+      "title": "Platform Engineer",
+      "dates": "2022 – Present",
+      "bullets": [
+        {"id": "platform-release", "text": "Maintained build and release pipelines for eight internal services, replacing manual handoffs with signed build artifacts and a single checklist that each service owner could run."},
+        {"id": "platform-preview", "text": "Created temporary test environments on AWS for feature branches and removed idle resources overnight, giving developers a repeatable environment for testing schema changes before release."},
+        {"id": "platform-alerts", "text": "Traced delayed alerts to a queue shared by reporting and transactional jobs, separated the workers, and added a dashboard to show the age of the oldest pending message."},
+        {"id": "platform-api", "text": "Designed an internal API for deployment history that connected release identifiers with incident reports and made it possible to compare failed and successful rollouts by service."},
+        {"id": "platform-guides", "text": "Partnered with the support team to rewrite the first-response guides for twelve recurring incidents, then used tabletop exercises to identify confusing steps and missing escalation contacts."},
+        {"id": "platform-pilot", "text": "Piloted an internal search assistant for engineering runbooks, evaluated its answers against a set of resolved support tickets, and recorded common retrieval failures for the documentation team."},
+        {"id": "platform-backups", "text": "Tested database snapshots in an isolated recovery environment each month and logged restoration times and gaps in the checklist for the engineers responsible for business continuity."}
+      ]
+    },
+    {
+      "id": "operations",
+      "company": "Copper Field Workshop",
+      "title": "Systems Operations Analyst",
+      "dates": "2019 – 2022",
+      "bullets": [
+        {"id": "operations-logs", "text": "Built Python utilities to summarize recurring application errors from service logs and routed the most frequent problems to the engineers responsible for those components."},
+        {"id": "operations-docs", "text": "Interviewed the operations team about manual reporting tasks, documented the source data behind each report, and built a shared validation checklist for end-of-month reporting."},
+        {"id": "operations-import", "text": "Reconciled overnight inventory imports against the source system, traced malformed records to inconsistent timestamps, and added validation messages that helped operators diagnose rejected files."},
+        {"id": "operations-tickets", "text": "Consolidated three intake queues into one ticket workflow and added routing rules that directed requests to the correct owner before the morning support shift."},
+        {"id": "operations-release", "text": "Prepared weekly release notes from completed tickets and checked each change with its owner so support staff could identify expected behavior after deployment."},
+        {"id": "operations-training", "text": "Trained new analysts to investigate incomplete records using SQL and a small set of repeatable checks, then gathered their feedback to simplify the onboarding guide."}
+      ]
+    }
+  ],
+  "skills": ["Python", "AWS", "Infrastructure as Code", "GitHub Actions", "Git", "Linux", "SQL", "REST APIs", "Docker", "PostgreSQL", "Monitoring", "Technical writing", "Incident response", "Test automation"],
+  "certifications": "Cloud Operations Foundations | Practical Incident Response",
+  "interests": "Trail running, community repair workshops and amateur astronomy",
+  "education": [
+    {"institution": "Example Institute of Technology", "degree": "Bachelor of Science in Information Systems", "dates": "2015 – 2019"}
+  ]
+}

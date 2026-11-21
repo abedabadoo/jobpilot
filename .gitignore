@@ -1,5 +1,7 @@
 # Local state and applicant files
 data/
+!resumeforge/data/
+!resumeforge/data/*.json
 applications/
 evidence/
 receipts/

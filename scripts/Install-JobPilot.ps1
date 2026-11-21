@@ -4,8 +4,6 @@ param(
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\JobPilot'),
     [string]$DataRoot = '',
     [string]$Python = (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
-    [switch]$SkipModel,
-    [switch]$SkipBrowser,
     [switch]$SkipDependencies,
     [switch]$Launch
 )
@@ -19,10 +17,69 @@ if (-not (Test-Path -LiteralPath (Join-Path $BuildRoot 'JobPilot.exe'))) { throw
 if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot 'jobpilot\service.py'))) { throw 'The JobPilot service source is missing.' }
 New-Item -ItemType Directory -Path $InstallRoot,$DataRoot -Force | Out-Null
 # Resolve physical paths so MSIX file virtualization cannot split the installed
-# desktop, database, model store or browser binaries into different locations.
+# desktop and database into different locations.
 $InstallRoot = (& $Python -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' $InstallRoot).Trim()
 $DataRoot = (& $Python -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' $DataRoot).Trim()
-foreach ($folder in @('web','remote_web','docs','scripts','assets')) {
+if ([string]::Equals($SourceRoot, $InstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SourceRoot must be a checkout separate from InstallRoot so managed files can be replaced safely.'
+}
+
+function Assert-ManagedChild([string]$Parent, [string]$Child) {
+    $separators = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $parentPath = [IO.Path]::GetFullPath($Parent).TrimEnd($separators)
+    $childPath = [IO.Path]::GetFullPath($Child)
+    $prefix = $parentPath + [IO.Path]::DirectorySeparatorChar
+    if (-not $childPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to replace a path outside its managed directory: $childPath"
+    }
+}
+
+$runtime = Join-Path $DataRoot 'runtime'
+$runtimeStage = Join-Path $DataRoot 'runtime.next'
+$runtimePrevious = Join-Path $DataRoot 'runtime.previous'
+foreach ($path in @($runtime,$runtimeStage,$runtimePrevious)) { Assert-ManagedChild $DataRoot $path }
+if ($SkipDependencies) {
+    $runtimePython = Join-Path $runtime 'Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $runtimePython)) {
+        throw '-SkipDependencies requires an existing compatible JobPilot runtime.'
+    }
+} else {
+    foreach ($path in @($runtimeStage,$runtimePrevious)) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+    & $Python -m venv $runtimeStage
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to stage the JobPilot Python runtime.' }
+    $stagedPython = Join-Path $runtimeStage 'Scripts\python.exe'
+    & $stagedPython -m pip install --disable-pip-version-check --progress-bar off -r (Join-Path $SourceRoot 'requirements-runtime.lock')
+    if ($LASTEXITCODE -ne 0) { throw 'JobPilot runtime dependency installation failed.' }
+    & $stagedPython -m pip check
+    if ($LASTEXITCODE -ne 0) { throw 'JobPilot runtime contains conflicting dependencies.' }
+    $priorPythonPath = $env:PYTHONPATH
+    try {
+        $env:PYTHONPATH = $SourceRoot
+        & $stagedPython -c 'import pandas, pdfplumber, reportlab; from jobspy import scrape_jobs; import jobpilot.collectors; import resumeforge.engine'
+        if ($LASTEXITCODE -ne 0) { throw 'JobPilot runtime import check failed.' }
+    } finally {
+        $env:PYTHONPATH = $priorPythonPath
+    }
+}
+
+# Application-owned code and binaries are replaced, never merged, so upgrades
+# cannot retain removed generators or legacy frozen modules. DataRoot is outside
+# this allowlist and is preserved in full.
+$managedFolders = @('web','docs','scripts','assets','jobpilot','resumeforge','_internal','remote_web')
+foreach ($folder in $managedFolders) {
+    $target = Join-Path $InstallRoot $folder
+    Assert-ManagedChild $InstallRoot $target
+    $separators = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $targetPrefix = [IO.Path]::GetFullPath($target).TrimEnd($separators) + [IO.Path]::DirectorySeparatorChar
+    if ([string]::Equals($DataRoot, [IO.Path]::GetFullPath($target), [StringComparison]::OrdinalIgnoreCase) -or
+        $DataRoot.StartsWith($targetPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "DataRoot cannot be inside an application-owned folder: $target"
+    }
+    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+}
+foreach ($folder in @('web','docs','scripts','assets')) {
     $from = Join-Path $SourceRoot $folder
     if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination $InstallRoot -Recurse -Force }
 }
@@ -32,29 +89,26 @@ Get-ChildItem -LiteralPath (Join-Path $SourceRoot 'jobpilot') -File -Filter '*.p
     Copy-Item -LiteralPath $_.FullName -Destination $packageRoot -Force
 }
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'jobpilot\candidate.json') -Destination $packageRoot -Force
-foreach ($filename in @('launcher.py','requirements.lock','README.md','LICENSE','THIRD_PARTY_NOTICES.md')) {
+Copy-Item -LiteralPath (Join-Path $SourceRoot 'jobpilot\greenhouse_boards.json') -Destination $packageRoot -Force
+Copy-Item -LiteralPath (Join-Path $SourceRoot 'resumeforge') -Destination $InstallRoot -Recurse -Force
+foreach ($filename in @('launcher.py','requirements.lock','requirements-runtime.lock','README.md','LICENSE','THIRD_PARTY_NOTICES.md')) {
     $from = Join-Path $SourceRoot $filename
     if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination (Join-Path $InstallRoot $filename) -Force }
 }
 Copy-Item -LiteralPath (Join-Path $BuildRoot 'JobPilot.exe') -Destination (Join-Path $InstallRoot 'JobPilot.exe') -Force
 Copy-Item -LiteralPath (Join-Path $BuildRoot '_internal') -Destination $InstallRoot -Recurse -Force
-$runtime = Join-Path $DataRoot 'runtime'
-$runtimePython = Join-Path $runtime 'Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $runtimePython)) {
-    & $Python -m venv $runtime
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to create JobPilot Python runtime.' }
-}
 if (-not $SkipDependencies) {
-    & $runtimePython -m pip install --disable-pip-version-check --progress-bar off -r (Join-Path $InstallRoot 'requirements.lock')
-    if ($LASTEXITCODE -ne 0) { throw 'JobPilot dependency installation failed.' }
-    & $runtimePython -m pip check
-    if ($LASTEXITCODE -ne 0) { throw 'JobPilot runtime contains conflicting dependencies.' }
-}
-& (Join-Path $InstallRoot 'scripts\Install-RemoteTools.ps1') -InstallRoot (Split-Path -Parent $DataRoot)
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $DataRoot 'browsers'
-if (-not $SkipBrowser) {
-    & $runtimePython -m playwright install chromium
-    if ($LASTEXITCODE -ne 0) { throw 'Chromium installation failed.' }
+    if (Test-Path -LiteralPath $runtime) { Move-Item -LiteralPath $runtime -Destination $runtimePrevious }
+    try {
+        Move-Item -LiteralPath $runtimeStage -Destination $runtime
+    } catch {
+        if (Test-Path -LiteralPath $runtimePrevious) {
+            Move-Item -LiteralPath $runtimePrevious -Destination $runtime
+        }
+        throw
+    }
+    if (Test-Path -LiteralPath $runtimePrevious) { Remove-Item -LiteralPath $runtimePrevious -Recurse -Force }
+    $runtimePython = Join-Path $runtime 'Scripts\python.exe'
 }
 $webviewRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeWebView\Application'
 if (-not (Test-Path -LiteralPath $webviewRoot)) {
@@ -65,50 +119,14 @@ if (-not (Test-Path -LiteralPath $webviewRoot)) {
     $webviewSetup = Start-Process -FilePath $webviewInstaller -ArgumentList '/silent','/install' -WindowStyle Hidden -Wait -PassThru
     if ($webviewSetup.ExitCode -ne 0) { throw "WebView2 setup failed: $($webviewSetup.ExitCode)" }
 }
-$ollama = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
-if (-not (Test-Path -LiteralPath $ollama)) { throw 'Ollama is required. Install it from https://ollama.com/download/windows, then rerun this installer.' }
-$ollama = (& $Python -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' $ollama).Trim()
 $installedPaths = [ordered]@{
     source = $InstallRoot
     python = $runtimePython
-    ollama = $ollama
     desktop_exe = (Join-Path $InstallRoot 'JobPilot.exe')
     data = $DataRoot
-    browsers = $env:PLAYWRIGHT_BROWSERS_PATH
-    models = (Join-Path $DataRoot 'ollama-models')
     service_url = 'http://127.0.0.1:8765'
-    ollama_url = 'http://127.0.0.1:11436'
-    model = 'qwen3.5:9b'
 }
 $installedPaths | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $InstallRoot 'installed_paths.json') -Encoding utf8
-if (-not $SkipModel) {
-    $env:OLLAMA_HOST = '127.0.0.1:11436'
-    $env:OLLAMA_NO_CLOUD = '1'
-    $env:OLLAMA_MODELS = $installedPaths.models
-    $env:OLLAMA_CONTEXT_LENGTH = '8192'
-    $env:OLLAMA_FLASH_ATTENTION = '1'
-    $env:OLLAMA_KV_CACHE_TYPE = 'q8_0'
-    $env:OLLAMA_NUM_PARALLEL = '1'
-    $env:OLLAMA_MAX_LOADED_MODELS = '1'
-    $env:OLLAMA_KEEP_ALIVE = '15m'
-    $logs = Join-Path $DataRoot 'logs'
-    New-Item -ItemType Directory -Path $logs -Force | Out-Null
-    try { Invoke-RestMethod -Uri 'http://127.0.0.1:11436/api/version' -TimeoutSec 2 | Out-Null }
-    catch {
-        $modelServer = Start-Process -FilePath $ollama -ArgumentList 'serve' -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logs 'ollama.out.log') -RedirectStandardError (Join-Path $logs 'ollama.err.log') -PassThru
-        $modelServer.Id | Set-Content -LiteralPath (Join-Path $DataRoot 'ollama.pid') -Encoding ascii
-        $ready = $false
-        for ($attempt = 0; $attempt -lt 120; $attempt++) {
-            try { Invoke-RestMethod -Uri 'http://127.0.0.1:11436/api/version' -TimeoutSec 1 | Out-Null; $ready = $true; break }
-            catch { Start-Sleep -Milliseconds 250 }
-        }
-        if (-not $ready) { throw 'The local-only Ollama service did not start.' }
-    }
-    $tags = Invoke-RestMethod -Uri 'http://127.0.0.1:11436/api/tags'
-    if (-not ($tags.models | Where-Object { $_.name -eq 'qwen3.5:9b' })) {
-        Invoke-RestMethod -Uri 'http://127.0.0.1:11436/api/pull' -Method Post -ContentType 'application/json' -Body '{"model":"qwen3.5:9b","stream":false}' -TimeoutSec 3600 | Out-Null
-    }
-}
 $shell = New-Object -ComObject WScript.Shell
 $desktop = $shell.SpecialFolders.Item('Desktop')
 $startMenu = Join-Path $shell.SpecialFolders.Item('Programs') 'JobPilot'

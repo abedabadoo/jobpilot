@@ -65,7 +65,9 @@ def canonical_url(value):
 
 def rank_key(job):
     date = parse_date(job.get("posted_at"))
+    priority = job.get("priority_tier")
     return (
+        priority if priority in (0, 1) else experience_priority(job),
         freshness(job.get("posted_at")),
         -float(job.get("fit", 0)),
         -(date.timestamp() if date else 0),
@@ -114,7 +116,7 @@ def _documented_years(profile):
 
 def _required_years(description):
     requirements = []
-    pattern = r"\b(\d+(?:\.\d+)?)\s*(?:\+|[-–]\s*\d+)?\s*(?:years?|yrs?)\s+(?:of\s+)?[^.;\n]{0,100}?\bexperience\b"
+    pattern = r"\b(\d+(?:\.\d+)?)\s*(?:\+|[-–]\s*\d+)?\s*(?:years?|yrs?)\b"
     for match in re.finditer(pattern, str(description).lower()):
         prefix = re.split(
             r"[.;\n]", str(description).lower()[max(0, match.start() - 90) : match.start()]
@@ -127,6 +129,25 @@ def _required_years(description):
             continue
         requirements.append(float(match.group(1)))
     return max(requirements) if requirements else None
+
+
+def experience_priority(job):
+    """Put recent, attainable roles ahead of fresh senior openings."""
+    title = _normal_title(job.get("title"))
+    required = _required_years(job.get("description", ""))
+    senior = bool(
+        re.search(
+            r"\b(senior|sr|staff|principal|lead|director|vp|vice president|head of|architect)\b",
+            title,
+        )
+    )
+    return (
+        0
+        if freshness(job.get("posted_at")) <= 2
+        and not senior
+        and (required is None or required <= 4)
+        else 1
+    )
 
 
 def role_assessment(job, profile, settings):
@@ -146,11 +167,32 @@ def role_assessment(job, profile, settings):
             "Commercial sales or channel role is outside the configured security career targets.",
         )
     security = re.search(r"\b(security|cybersecurity|cyber|infosec|grc|compliance)\b", title)
-    ordinary = security and re.search(r"\b(engineer|analyst|specialist|auditor)\b", title)
-    if not ordinary and not explicit:
+    ordinary = security and re.search(
+        r"\b(engineer|analyst|specialist|auditor|researcher|consultant|advisor)\b", title
+    )
+    security_operations = re.search(r"\b(soc|incident response)\b", title) and re.search(
+        r"\b(engineer|analyst|specialist)\b", title
+    )
+    configured = " ".join(_normal_title(target) for target in targets)
+    platform_role = (
+        (
+            re.search(r"\b(devops|devsecops)\b", title)
+            and re.search(r"\b(devops|devsecops)\b", configured)
+        )
+        or (
+            re.search(r"\b(cloud|platform|infrastructure|site reliability|sre)\b", title)
+            and re.search(r"\b(cloud|platform|infrastructure|site reliability|sre)\b", configured)
+            and re.search(r"\b(engineer|specialist|developer|sre)\b", title)
+        )
+        or (
+            re.search(r"\b(forward deployed|fde)\b", title)
+            and re.search(r"\b(forward deployed|fde)\b", configured)
+        )
+    )
+    if not ordinary and not security_operations and not platform_role and not explicit:
         return (
             "excluded",
-            "Role is outside the configured security engineering, analysis and compliance targets.",
+            "Role is outside the configured career targets.",
         )
     required = _required_years(job.get("description", ""))
     if required is not None:
@@ -174,14 +216,36 @@ def score_job(job, profile, settings):
     roles = settings.get("target_roles", settings.get("search_titles", []))
     relevant = any(
         word in title
-        for word in ["security", "cyber", "infosec", "grc", "compliance", "soc analyst"]
+        for word in [
+            "security",
+            "cyber",
+            "infosec",
+            "grc",
+            "compliance",
+            "soc analyst",
+            "incident response",
+            "devops",
+            "devsecops",
+            "cloud engineer",
+            "platform engineer",
+            "site reliability",
+            "forward deployed",
+            "fde",
+        ]
     )
     title_score = 45 if any(str(r).lower() in title for r in roles) else (30 if relevant else 0)
     skills = profile.get("skills", [])
     matches = sum(str(s).lower() in text for s in skills)
     skill_score = min(40, matches * 5)
-    seniority = 5 if re.search(r"\b(principal|director|vice president|staff)\b", title) else 15
-    return min(100, title_score + skill_score + (seniority if relevant else 0))
+    senior = bool(
+        re.search(r"\b(senior|sr|principal|director|vice president|staff|lead|architect)\b", title)
+    )
+    required = _required_years(job.get("description", ""))
+    years_penalty = min(25, max(0, (required or 0) - 3) * 5)
+    seniority = 5 if senior else 15
+    return max(
+        0, min(100, int(title_score + skill_score + (seniority if relevant else 0) - years_penalty))
+    )
 
 
 _US_STATES = dict(
@@ -252,6 +316,13 @@ def eligibility(job, settings):
         )
     if not location:
         return "review", "Job location is unknown; verify eligibility before applying."
+    if settings.get("remote") and re.fullmatch(
+        r"\s*(?:us|usa|united states(?: of america)?)\s*", location
+    ):
+        return (
+            "review",
+            "The listing covers the United States but does not say whether remote work is allowed.",
+        )
     return "excluded", "Location does not match the configured city or remote USA preference."
 
 
