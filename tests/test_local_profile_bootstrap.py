@@ -150,6 +150,7 @@ def test_interrupted_initial_rescore_retries_without_partial_profile_commit(tmp_
             pass
 
     store = InterruptingStore()
+
     def score(job, profile, settings):
         return 90
 
