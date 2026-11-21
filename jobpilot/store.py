@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -37,8 +38,17 @@ class Store:
             c.execute("INSERT OR IGNORE INTO job_id_sequence(id,highwater) VALUES(1,0)")
             self._preserve_job_ids(c)
 
+    @contextmanager
     def connect(self):
-        return sqlite3.connect(self.path, timeout=15)
+        # sqlite3.Connection.__exit__ commits/rolls back but does NOT close.
+        # Explicit close avoids exhausting macOS file descriptors during
+        # bulk updates such as the first-run ResumeForge profile import.
+        connection = sqlite3.connect(self.path, timeout=15)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     @staticmethod
     def now():
