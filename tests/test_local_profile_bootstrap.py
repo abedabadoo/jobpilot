@@ -1,4 +1,4 @@
-"""Local-only ResumeForge profile bootstrap; never commit a real applicant profile."""
+"""Local profile import tests use fictional data, never a real applicant profile."""
 
 import json
 
@@ -8,23 +8,44 @@ from jobpilot.local_profile import adopt_local_profile, read_local_profile
 def _draft(tmp_path):
     master = tmp_path / "master"
     master.mkdir()
-    (master / "draft.json").write_text(json.dumps({
+    draft = {
         "profile": {
             "name": "Casey Example",
-            "contact": "+1 (202) 555-0130 | casey@example.org | Cincinnati, OH, USA | linkedin.com/in/casey",
-            "roles": [{
-                "id": "role-1", "company": "Acme", "title": "Security Engineer",
-                "dates": "July 2024 - July 2026",
-                "bullets": [{"id": "bullet-1", "text": "Automated Python security scans on AWS."}],
-            }],
-            "facts": [{"id": "fact-1", "role_id": "role-1", "confirmed": True,
-                       "text": "Reviewed additional security evidence."}],
+            "contact": (
+                "+1 (202) 555-0130 | casey@example.org | Cincinnati, OH, USA "
+                "| linkedin.com/in/casey"
+            ),
+            "roles": [
+                {
+                    "id": "role-1",
+                    "company": "Acme",
+                    "title": "Security Engineer",
+                    "dates": "July 2024 - July 2026",
+                    "bullets": [
+                        {"id": "bullet-1", "text": "Automated Python security scans on AWS."}
+                    ],
+                }
+            ],
+            "facts": [
+                {
+                    "id": "fact-1",
+                    "role_id": "role-1",
+                    "confirmed": True,
+                    "text": "Reviewed additional security evidence.",
+                }
+            ],
             "skills": ["AWS", "Python"],
             "certifications": "CompTIA Security+ | Google Cybersecurity Certificate",
-            "education": [{"institution": "Example University", "degree": "BS",
-                           "dates": "August 2017 - May 2021"}],
+            "education": [
+                {
+                    "institution": "Example University",
+                    "degree": "BS",
+                    "dates": "August 2017 - May 2021",
+                }
+            ],
         },
-    }), encoding="utf-8")
+    }
+    (master / "draft.json").write_text(json.dumps(draft), encoding="utf-8")
     return master
 
 
@@ -45,9 +66,16 @@ def test_bootstrap_replaces_sample_and_rescores_without_overwriting_user(tmp_pat
     class Store:
         def __init__(self):
             self.values = {"profile": {"sample_profile": True, "name": "Jordan Morgan"}}
-            self.rows = [{"id": 1, "title": "Security Engineer", "status": "queued", "fit": 15},
-                         {"id": 2, "title": "Security Engineer", "status": "skipped", "fit": 15,
-                          "note": "Fit is below the configured search threshold."}]
+            self.rows = [
+                {"id": 1, "title": "Security Engineer", "status": "queued", "fit": 15},
+                {
+                    "id": 2,
+                    "title": "Security Engineer",
+                    "status": "skipped",
+                    "fit": 15,
+                    "note": "Fit is below the configured search threshold.",
+                },
+            ]
             self.events = []
 
         def get(self, key, default=None):
@@ -66,8 +94,10 @@ def test_bootstrap_replaces_sample_and_rescores_without_overwriting_user(tmp_pat
             self.events.append(note)
 
     store = Store()
+
     def score(job, profile, settings):
         return 85 if "Python" in profile["skills"] else 10
+
     master = _draft(tmp_path)
     assert adopt_local_profile(store, master, score, {"min_fit": 40}) is True
     assert store.get("profile")["name"] == "Casey Example"
@@ -82,5 +112,8 @@ def test_bootstrap_replaces_sample_and_rescores_without_overwriting_user(tmp_pat
 def test_missing_master_keeps_fictional_seed(tmp_path):
     assert read_local_profile(tmp_path) is None
     master = _draft(tmp_path)
-    (master / "draft.json").write_text('{"profile":{"name":"Morgan Example"}}', encoding="utf-8")
+    (master / "draft.json").write_text(
+        '{"profile":{"name":"Morgan Example"}}',
+        encoding="utf-8",
+    )
     assert read_local_profile(master) is None
