@@ -30,9 +30,9 @@ Recent roles requesting roughly three years of experience appear ahead of fresh 
 
 ## Documents and keywords
 
-ResumeForge owns all document creation. Its measured one-page layout keeps Interests beneath Skills & Certifications and lets you edit keywords and experience. JobPilot never creates a resume or cover letter. It sends the posting and its extracted keywords to the bundled ResumeForge engine once a role reaches 80% fit. A resume that needs review remains available in the editor for revision.
+ResumeForge owns all document creation. Its measured one-page layout keeps Interests beneath Skills & Certifications and lets you edit keywords and experience. JobPilot never creates a resume or cover letter. Once a role reaches 80% fit, JobPilot sends the complete posting to the bundled ResumeForge engine. ResumeForge performs its own contextual requirement analysis instead of treating JobPilot's quick dashboard keywords as reviewed priorities. A resume that needs review remains available in the editor for revision.
 
-Checked resumes are saved as `~/Downloads/JobPilot RF Docs/Company - Role/Alnajjar_Resume.pdf`. Cover letters are never generated automatically. The editor offers an editable draft only after a checked resume exists; saving it creates `Alnajjar_CoverLetter.pdf` in the same role folder. JobPilot's **Sync ResumeForge PDFs** control adds the optional letter to the role. The Chrome extension can attach these PDFs.
+Checked automatic resumes are saved as `~/Downloads/JobPilot RF Docs/Company - Role/job-ID-hash/Alnajjar_Resume.pdf`, so separate postings with the same title never overwrite one another. Cover letters are never generated automatically. The editor offers an editable draft only after a checked resume exists; saving it creates `Alnajjar_CoverLetter.pdf` beside that posting's resume. JobPilot's **Sync ResumeForge PDFs** control adds the optional letter to the role. The Chrome extension attaches the prepared resume.
 
 ### ResumeForge handoff
 
@@ -50,7 +50,7 @@ For Gmail, use a Google app password with `imap.gmail.com` on port `993`. A norm
 
 Packaged desktop releases include their Python runtime. The combined Mac archive targets Intel (`x86_64`); see [Mac installation and source setup](docs/macos.md). Default Mac builds are ad hoc signed, without Apple notarization.
 
-For Windows source development, use Python 3.13 and Microsoft Edge WebView2. ResumeForge can build with its deterministic provider or an optional locally configured model. Browser automation dependencies remain for dormant legacy modules and their regression tests.
+For Windows source development, use Python 3.13 and Microsoft Edge WebView2. ResumeForge can build with its offline provider or a model configured in the ResumeForge editor. The writing model is loaded only when ResumeForge needs it; JobPilot does not start a second model service. Browser automation dependencies are development-only support for dormant legacy regression tests.
 
 ```powershell
 git clone https://github.com/abedabadoo/jobpilot.git

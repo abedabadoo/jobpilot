@@ -53,6 +53,19 @@ def test_pause_clears_pending_monitoring_but_keeps_manual_search_available(monit
     assert not service.settings()["search_enabled"]
 
 
+def test_minimum_fit_cannot_hide_eighty_plus_resume_roles(monitor_api, monkeypatch):
+    service, client, headers = monitor_api
+    response = client.post("/api/settings", headers=headers, json={"min_fit": 100})
+    assert response.status_code == 200
+    assert service.settings()["min_fit"] == 80
+    monkeypatch.setattr(service, "score_job", lambda *_: 85)
+    classified = service.classify_job(
+        posting("always-kept"), service.store.get("profile"), service.settings()
+    )
+    assert classified["fit"] == 85
+    assert classified["status"] != "skipped"
+
+
 def test_active_search_does_not_advertise_a_second_overlapping_check(monitor_api):
     service, client, _ = monitor_api
     service.worker["searching"] = True

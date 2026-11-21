@@ -18,7 +18,6 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -29,19 +28,7 @@ from .assets import asset_directory
 from .autofill import ExtensionAPI
 from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
 from .platforms import SystemSleepInhibitor, application_data_dir
-from .remote_runtime import RemoteRuntime
 from .store import Store
-
-
-def local_endpoint(url):
-    parsed = urlsplit(str(url))
-    return (
-        parsed.scheme == "http"
-        and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        and not parsed.username
-        and not parsed.password
-    )
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = application_data_dir()
@@ -74,8 +61,6 @@ DEFAULTS = {
     "startup": False,
     "remote_intervention_enabled": False,
     "intervention_timeout_seconds": 28800,
-    "ollama_url": "http://127.0.0.1:11436",
-    "model": "qwen3.5:9b",
     "sources": ["indeed"],
     "results_per_source": 50,
     "hours_old": 72,
@@ -92,7 +77,10 @@ for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]
     if store.get(key) is None:
         store.set(key, default)
 stored_preferences = store.get("settings", {})
-if stored_preferences.get("application_mode") != "legacy":
+if (
+    os.environ.get("JOBPILOT_COMBINED") == "1"
+    or stored_preferences.get("application_mode") != "legacy"
+):
     stored_preferences.update(
         application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
     )
@@ -103,7 +91,52 @@ TOKEN = store.get("_session_token") or secrets.token_urlsafe(32)
 store.set("_session_token", TOKEN)
 stop_event = threading.Event()
 sleep_inhibitor = SystemSleepInhibitor()
-remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
+
+
+class _CombinedRemoteBroker:
+    def list_cases(self):
+        return []
+
+    def pause(self, *_args, **_kwargs):
+        raise RuntimeError("Remote application control is unavailable in the combined app.")
+
+
+class _CombinedRemoteRuntime:
+    """Small disabled facade for builds that never ship browser automation."""
+
+    auth = None
+
+    def __init__(self):
+        self.broker = _CombinedRemoteBroker()
+
+    def status(self):
+        return {
+            "starting": False,
+            "listening": False,
+            "error": "",
+            "gateway": {"running": False, "url": "", "error": ""},
+            "waiting": 0,
+            "notifications": {"subscribed_devices": 0},
+        }
+
+    def start_async(self):
+        return None
+
+    def stop(self):
+        return None
+
+    def pairing_link(self):
+        return ""
+
+
+if os.environ.get("JOBPILOT_COMBINED") == "1":
+    remote_runtime = _CombinedRemoteRuntime()
+else:
+    # Kept for source-only legacy regression coverage. Native combined builds
+    # exclude this optional browser-control stack entirely.
+    from .remote_runtime import RemoteRuntime
+
+    remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
 search_requested = threading.Event()
 discovery_lock = threading.Lock()
 application_lock = threading.RLock()
@@ -119,14 +152,29 @@ worker = {
     "current": None,
     "last_search": store.get("last_search"),
     "last_error": None,
-    "model_status": "Checking local model",
     "email_status": "Not configured",
 }
+
+AUTO_RESUME_MIN_FIT = 80.0
+AUTO_RESUME_MAX_RETRIES = 3
+AUTO_RESUME_RETRY_BASE_SECONDS = 30
+
+
+def _resume_attempt_count(value) -> int:
+    """Normalize persisted retry state so a damaged row cannot stop the queue."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def settings():
     conf = {**DEFAULTS, **store.get("settings", {}), "data_dir": str(DATA)}
-    if conf.get("application_mode") != "legacy":
+    try:
+        conf["min_fit"] = max(0, min(int(AUTO_RESUME_MIN_FIT), int(conf["min_fit"])))
+    except (KeyError, TypeError, ValueError):
+        conf["min_fit"] = DEFAULTS["min_fit"]
+    if os.environ.get("JOBPILOT_COMBINED") == "1" or conf.get("application_mode") != "legacy":
         conf.update(
             application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
         )
@@ -481,6 +529,27 @@ def discovery_loop():
             discover_once()
 
 
+def _failed_resume_result(job: dict, workspace: str, result: dict | None = None) -> dict:
+    """Add bounded retry state to an engine or exception failure."""
+    previous = job.get("resumeforge") if isinstance(job.get("resumeforge"), dict) else {}
+    attempts = (
+        _resume_attempt_count(previous.get("attempts")) + 1
+        if previous.get("workspace") == workspace
+        else 1
+    )
+    retry_after = None
+    if attempts < AUTO_RESUME_MAX_RETRIES:
+        delay = AUTO_RESUME_RETRY_BASE_SECONDS * (2 ** (attempts - 1))
+        retry_after = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+    return {
+        **(result or {}),
+        "status": "failed",
+        "workspace": workspace,
+        "attempts": attempts,
+        "retry_after": retry_after,
+    }
+
+
 def prepare_job(job_id, preserve_review=False):
     with application_lock:
         if stop_event.is_set():
@@ -536,6 +605,11 @@ def prepare_job(job_id, preserve_review=False):
                 )
                 store.event(f"ResumeForge resume ready for {job['title']} at {job['company']}.")
             else:
+                if result["status"] == "failed":
+                    workspace = str(
+                        result.get("workspace") or resumeforge_bridge.workspace_path(DATA, job).name
+                    )
+                    result = _failed_resume_result(job, workspace, result)
                 store.update_job(
                     job_id,
                     status="needs_review",
@@ -544,14 +618,36 @@ def prepare_job(job_id, preserve_review=False):
                     note=(prior_note + " ResumeForge needs a revision before export.").strip(),
                 )
         except Exception as exc:
+            try:
+                workspace = resumeforge_bridge.workspace_path(DATA, job).name
+            except (TypeError, ValueError):
+                workspace = ""
+            setup_required = isinstance(exc, (FileNotFoundError, ValueError)) and (
+                "profile" in str(exc).casefold() or "model settings" in str(exc).casefold()
+            )
+            failure = _failed_resume_result(job, workspace)
             store.update_job(
                 job_id,
                 status="needs_review",
                 documents={},
-                resumeforge={"status": "failed"},
+                resumeforge={
+                    "status": "setup_required" if setup_required else "failed",
+                    "workspace": workspace,
+                    "attempts": 0 if setup_required else failure["attempts"],
+                    "retry_after": None if setup_required else failure["retry_after"],
+                    **(
+                        {"master_revision": resumeforge_bridge.master_revision()}
+                        if setup_required
+                        else {}
+                    ),
+                },
                 note=(
                     prior_note
-                    + " ResumeForge could not finish this resume. Open the role to retry."
+                    + (
+                        " Save your ResumeForge profile; this resume will start automatically afterward."
+                        if setup_required
+                        else " ResumeForge could not finish this resume. Open the role to retry."
+                    )
                 ).strip(),
             )
             report_error(
@@ -743,6 +839,54 @@ def apply_job(job_id):
             worker["current"] = None
 
 
+def _automatic_resume_due(job: dict, *, now: datetime | None = None) -> bool:
+    """Return whether an unchanged 80%+ role needs one serialized build.
+
+    Successful and editorially blocked runs are stable. A changed posting gets
+    a new workspace and therefore one new build. Transient failures retry with
+    a short bound; missing first-run profile data waits without burning CPU and
+    becomes eligible as soon as the ResumeForge profile is saved.
+    """
+
+    try:
+        if float(job.get("fit") or 0) < AUTO_RESUME_MIN_FIT:
+            return False
+        expected_workspace = resumeforge_bridge.workspace_path(DATA, job).name
+    except (TypeError, ValueError):
+        return False
+    forge = job.get("resumeforge")
+    if not isinstance(forge, dict) or forge.get("workspace") != expected_workspace:
+        return True
+    status = forge.get("status")
+    if status == "ready":
+        path = (job.get("documents") or {}).get("resumeforge_pdf")
+        digest = str(forge.get("sha256") or "")
+        return not (
+            isinstance(path, str) and digest and resumeforge_bridge.checked_copy(path, digest, DATA)
+        )
+    if status == "setup_required":
+        # Retry only after the user actually changes their saved master draft.
+        # An existing but incomplete draft must not trigger a build every loop.
+        revision = resumeforge_bridge.master_revision()
+        return bool(revision and revision != forge.get("master_revision"))
+    if status != "failed":
+        # needs_content and needs_review require editorial input, not a hot loop.
+        return False
+    attempts = _resume_attempt_count(forge.get("attempts"))
+    if attempts >= AUTO_RESUME_MAX_RETRIES:
+        return False
+    retry_after = forge.get("retry_after")
+    if not retry_after:
+        return True
+    try:
+        deadline = datetime.fromisoformat(str(retry_after).replace("Z", "+00:00"))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return True
+    return (now or datetime.now(timezone.utc)) >= deadline
+
+
 def process_document_queue():
     if stop_event.is_set():
         return None
@@ -773,9 +917,7 @@ def process_document_queue():
                 row
                 for row in store.jobs()
                 if row["status"] in ("queued", "prepared", "needs_review")
-                and float(row.get("fit") or 0) >= 80
-                and not (row.get("documents") or {}).get("resumeforge_pdf")
-                and not row.get("resumeforge")
+                and _automatic_resume_due(row)
                 and not row.get("uncertain")
                 and not row.get("applied")
                 and not _manual_handoff_active(row)
@@ -790,9 +932,13 @@ def process_document_queue():
 
 def application_loop():
     while not stop_event.wait(2):
-        if settings()["application_mode"] == "assist":
-            process_document_queue()
-        elif settings()["submission_enabled"]:
+        # Resume creation is independent of the deprecated application-mode
+        # switch. Every eligible role is handled by the same serialized
+        # ResumeForge queue, while form submission remains disabled in assist
+        # mode and is never required for a resume build.
+        if process_document_queue() is not None:
+            continue
+        if settings()["application_mode"] != "assist" and settings()["submission_enabled"]:
             job = next(
                 (
                     j
@@ -831,22 +977,11 @@ def health_loop():
             else:
                 sleep_inhibitor.set_enabled(bool(conf["keep_awake"]))
                 awake = bool(sleep_inhibitor.process and sleep_inhibitor.process.poll() is None)
-            with httpx.Client(timeout=3, trust_env=False) as client:
-                tags = (
-                    client.get(conf["ollama_url"].rstrip("/") + "/api/tags")
-                    .raise_for_status()
-                    .json()
-                )
-                names = {m.get("name") for m in tags.get("models", [])}
-                worker["model_status"] = (
-                    "qwen3.5:9b ready locally"
-                    if conf["model"] in names
-                    else "Local model download pending"
-                )
         except Exception:
-            worker["model_status"] = (
-                "Local model service unavailable; verified template fallback active"
-            )
+            # Sleep inhibition is best effort. ResumeForge owns model startup
+            # and status, so the always-on JobPilot worker never polls or wakes
+            # a language-model service.
+            awake = False
         worker["keep_awake"] = awake
         worker["email_status"] = (
             "Configured" if conf.get("email", {}).get("enabled") else "Not configured"
@@ -1045,13 +1180,14 @@ def control(body: dict):
     conf = store.get("settings", {})
     was_enabled = conf.get("search_enabled", False)
     if body.get("action") == "shutdown":
-        from . import browser
+        if settings()["application_mode"] != "assist":
+            from . import browser
 
-        if browser.login_in_progress():
-            raise HTTPException(
-                409,
-                "Close the JobPilot sign-in or verification browser before restarting the service.",
-            )
+            if browser.login_in_progress():
+                raise HTTPException(
+                    409,
+                    "Close the JobPilot sign-in or verification browser before restarting the service.",
+                )
         if (
             worker["searching"]
             or worker["submitting"]
@@ -1115,7 +1251,7 @@ def save_settings(body: dict):
     update = {k: v for k, v in body.items() if k in allowed}
     for key, low, high in [
         ("search_interval_minutes", 5, 1440),
-        ("min_fit", 0, 100),
+        ("min_fit", 0, int(AUTO_RESUME_MIN_FIT)),
         ("results_per_source", 1, 50),
         ("hours_old", 1, 720),
     ]:
@@ -1130,10 +1266,6 @@ def save_settings(body: dict):
         or any(not isinstance(x, str) for x in update["target_roles"])
     ):
         raise HTTPException(400, "Target roles must be a nonempty list of role names.")
-    if "ollama_url" in update and not local_endpoint(update["ollama_url"]):
-        raise HTTPException(400, "Inference must use a local HTTP Ollama endpoint.")
-    if "model" in update and update["model"] != "qwen3.5:9b":
-        raise HTTPException(400, "Only the installed local qwen3.5:9b model is enabled.")
     for key in ["remote", "search_enabled", "submission_enabled", "keep_awake", "startup"]:
         if key in update and not isinstance(update[key], bool):
             raise HTTPException(400, f"{key} must be true or false.")
@@ -1452,9 +1584,12 @@ def _cleanup_clock():
 
 
 def _cleanup_busy():
-    from . import browser
+    browser_busy = False
+    if settings()["application_mode"] != "assist":
+        from . import browser
 
-    if worker["submitting"] or worker["current"] or browser.login_in_progress():
+        browser_busy = browser.login_in_progress()
+    if worker["submitting"] or worker["current"] or browser_busy:
         return True
     if not application_lock.acquire(blocking=False):
         return True
@@ -1520,9 +1655,20 @@ def delete_old_jobs(body: dict):
 
 
 def _normal_browser_tab(url):
-    from . import browser
+    if settings()["application_mode"] == "assist":
+        from .links import open_external_url
 
-    result = browser.open_browser_tab(url)
+        try:
+            result = open_external_url(url)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                400,
+                "The job page could not be opened. Copy its public posting link into your browser.",
+            ) from exc
+    else:
+        from . import browser
+
+        result = browser.open_browser_tab(url)
     if result.get("status") != "opened":
         raise HTTPException(400, result.get("note") or "Could not open the default browser.")
     return result
@@ -1704,6 +1850,8 @@ def resumeforge_status(job_id: int):
     except ValueError:
         return {"status": "invalid", "attached": False}
     if not (workspace / "draft.json").is_file():
+        if (job.get("resumeforge") or {}).get("status") == "setup_required":
+            return {"status": "setup_required", "attached": False}
         return {"status": "not_opened", "attached": False}
     try:
         result = resumeforge_bridge.checked_run(workspace)
@@ -1735,17 +1883,16 @@ def use_resumeforge_pdf(job_id: int):
     if result["status"] != "ready":
         raise HTTPException(409, "Build and review the resume in ResumeForge first.")
     try:
-        folder = resumeforge_bridge.downloads_folder(job)
+        destination = resumeforge_bridge.resume_destination(DATA, job)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    destination = folder / "Alnajjar_Resume.pdf"
     was_checked = resumeforge_bridge.checked_copy(str(destination), result["sha256"], DATA)
     try:
         export_checked(result["pdf"].parent, destination)
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     documents = {"resumeforge_pdf": str(destination)}
-    cover = folder / "Alnajjar_CoverLetter.pdf"
+    cover = destination.parent / "Alnajjar_CoverLetter.pdf"
     if cover.is_file() and cover.stat().st_size > 5 and cover.read_bytes()[:5] == b"%PDF-":
         documents["resumeforge_cover_pdf"] = str(cover)
     job = require_job(job_id)
@@ -1818,6 +1965,10 @@ def review_action(job_id: int, body: dict | None = None):
         return job_browser_tab(job_id, {"purpose": "application"})
     if mode not in ["isolated", "remote"]:
         raise HTTPException(400, "Choose default_browser, isolated or remote.")
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(
+            409, "The combined app uses your regular browser for application review."
+        )
     if mode == "remote" and not (
         settings()["remote_intervention_enabled"] and remote_runtime.status()["listening"]
     ):
@@ -2014,6 +2165,8 @@ def login(body: dict):
         return browser_tab(body)
     if mode != "isolated":
         raise HTTPException(400, "Choose default_browser or isolated.")
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(409, "The combined app uses your regular browser for sign-in.")
     from . import browser
 
     platform = body.get("platform", "employer")

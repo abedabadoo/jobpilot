@@ -2,36 +2,30 @@
 
 ## Prerequisites
 
-Install 64-bit Python 3.13 and [Ollama for Windows](https://ollama.com/download/windows). The desktop window uses Microsoft Edge WebView2; the installer checks for it and runs Microsoft's bootstrapper if needed. A source run needs WebView2 already available, or you can use the local dashboard in a normal browser.
+Install 64-bit Python 3.13. The desktop window uses Microsoft Edge WebView2; the installer checks for it and runs Microsoft's bootstrapper if needed. A source run needs WebView2 already available, or you can use the local dashboard in a normal browser. A model service is optional and is configured inside the bundled ResumeForge editor, not as a JobPilot prerequisite.
 
-Run commands from the repository root in PowerShell. Use a regular Windows user account. Stop any other JobPilot instance before starting this checkout: the launcher reuses services on ports `8765` and `11436`.
+Run commands from the repository root in PowerShell. Use a regular Windows user account. Stop any other JobPilot instance before starting this checkout: the launcher reuses the loopback service on port `8765`.
 
 ## Run from source
 
-Create an environment and download Chromium into a separate source-run data directory:
+Create an environment and use a separate source-run data directory:
 
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.lock
 $env:JOBPILOT_DATA_DIR = Join-Path $env:LOCALAPPDATA 'JobPilot-Source\data'
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $env:JOBPILOT_DATA_DIR 'browsers'
-.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe launcher.py --service-only
 ```
 
-The launcher starts or reuses local Ollama and the worker, writing logs under the data directory. Download the supported model into the same model store, then open the desktop:
+The launcher starts or reuses the worker and writes logs under the data directory. Open the desktop with the same environment:
 
 ```powershell
-$env:OLLAMA_HOST = '127.0.0.1:11436'
-$env:OLLAMA_NO_CLOUD = '1'
-$env:OLLAMA_MODELS = Join-Path $env:JOBPILOT_DATA_DIR 'ollama-models'
-& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" pull qwen3.5:9b
 .\.venv\Scripts\python.exe launcher.py
 ```
 
 Keep `JOBPILOT_DATA_DIR` consistent in later shells. Without that override, a source launch uses `%LOCALAPPDATA%\JobPilot`. It uses the Python executable that runs `launcher.py`; it does not require an installed runtime or `installed_paths.json`.
 
-For a browser-only session, run `.\.venv\Scripts\python.exe -m jobpilot.service --port 8765` and open `http://127.0.0.1:8765`. This command does not start Ollama. Document preparation can use the verified-fact template fallback while the model is unavailable.
+For a browser-only session, run `.\.venv\Scripts\python.exe -m jobpilot.service --port 8765` and open `http://127.0.0.1:8765`. ResumeForge can use its offline writing path until you configure a model in its editor.
 
 ## Build and install
 
@@ -42,24 +36,24 @@ The build uses the checkout's `.venv` and writes to `build\desktop-dist\JobPilot
 .\scripts\Install-JobPilot.ps1 -Python (py -3.13 -c "import sys; print(sys.executable)") -Launch
 ```
 
-Pass an explicit Python 3.13 executable if the Python launcher is unavailable. `-BuildPython`, `-WorkRoot` and `-SourceRoot` override build locations. The installer accepts `-BuildRoot`, `-InstallRoot` and `-DataRoot`; its defaults are `%LOCALAPPDATA%\Programs\JobPilot` and that installation's `data` subdirectory. It creates a separate Python runtime, installs dependencies and Chromium, downloads the model and verified tunnel helper, and creates desktop and Start-menu shortcuts. Downloads require internet access and can take time.
+Pass an explicit Python 3.13 executable if the Python launcher is unavailable. `-BuildPython`, `-WorkRoot` and `-SourceRoot` override build locations. The installer accepts `-BuildRoot`, `-InstallRoot` and `-DataRoot`; its defaults are `%LOCALAPPDATA%\Programs\JobPilot` and that installation's `data` subdirectory. It creates a separate Python runtime, installs the application dependencies and creates desktop and Start-menu shortcuts. ResumeForge model installation and configuration remain separate, optional actions.
 
-The PyInstaller output contains the desktop launcher; installing also supplies the service source and its Python environment. It is not a standalone worker runtime.
+The PyInstaller output contains the desktop launcher; installing also supplies the service source and its smaller resident-service environment. Build and test packages, the ResumeForge Qt editor, and dormant browser/remote dependencies are not duplicated into that environment. It is not a standalone worker runtime.
 
 ## First use
 
 1. Replace the fictional profile with your contact details and career history.
 2. Set target roles and location, then select **Start monitoring** above the opportunities. Choose a check interval; the next check and results from each source appear in that panel. **Search now** runs a single check even while monitoring is paused.
-3. Use **Review** to inspect fit, job-description keywords, and tailored document exports.
+3. Roles at 80% fit or above automatically enter the ResumeForge queue. Use **Review** to inspect fit, job-description keywords, and the checked resume PDF.
 4. Open the job in your usual browser and apply there. Click **Applied?** when finished; the role moves to Applied.
 
 ### Using ResumeForge for a role
 
-Install the [ResumeForge desktop app](https://github.com/abedabadoo/resumeforge) and save your source profile there first. In JobPilot, open a role with a full description and select **Open in ResumeForge**. JobPilot launches the installed editor with that role's posting and keywords already loaded. The editor uses a separate workspace for this role and copies your saved ResumeForge profile and model settings into it the first time you open it.
+Choose **ResumeForge profile** in JobPilot and save your source profile first. ResumeForge is bundled into the same application; a separate installation is unnecessary. A role with a full description starts building automatically when its fit reaches 80%. Select **Open in ResumeForge** to inspect or edit its dedicated workspace. The first open copies your saved ResumeForge profile and model settings into that workspace.
 
-Analyze, edit, and build the resume in ResumeForge. Return to JobPilot's role details. When the status says **Checked PDF ready**, select **Use checked PDF**. The PDF appears as **ResumeForge PDF** with Open and Download controls. JobPilot keeps its own resume and cover-letter files as separate documents. If ResumeForge says the draft needs content or review, finish those checks there before importing it.
+ResumeForge analyzes the complete posting, ranks its requirements, writes the tailored content, and performs the measured PDF checks. When the status says **Checked PDF ready**, the ResumeForge PDF appears with Open and Download controls. ResumeForge is the only document generator; JobPilot does not keep a second resume or Word export. Cover letters are never created automatically. After a checked resume exists, you may create and edit an optional letter in ResumeForge and then use **Sync ResumeForge PDFs**.
 
-Reopening the same posting keeps edits in its role workspace. If the posting changes, JobPilot opens a fresh workspace. Your main ResumeForge workspace remains intact. The ResumeForge app runs independently; JobPilot does not require its browser server or a shared Python environment.
+Reopening the same posting keeps edits in its role workspace. If the posting changes, JobPilot opens a fresh workspace. Your main ResumeForge workspace remains intact. The editor starts on demand and closes independently, so Qt and the writing model do not remain resident while JobPilot is only monitoring jobs.
 
 Closing the desktop window hides it to the tray. **Quit dashboard** leaves the worker running. **Stop worker** stops background work without deleting the queue. Windows sign-in startup is available after installation, through Preferences. The installed recovery task checks every five minutes and at sign-in, and starts services only when the saved startup setting is enabled. Automatic submission and remote access remain disabled in assistant mode, even when older saved preferences enabled them.
 
@@ -73,4 +67,4 @@ Saving an address alone does not authorize inbox access. JobPilot will report an
 
 ## Updating and backup
 
-Pause searches and wait for document preparation to finish before maintenance. Back up the data directory while services are stopped, including the SQLite database and its associated files. Rebuild and rerun the installer using the same installation and data paths. Repair switches `-SkipModel`, `-SkipBrowser` and `-SkipDependencies` skip those steps only when the existing components are already usable. Do not overwrite or delete data to repair application code.
+Pause searches, stop the worker, and wait for ResumeForge preparation to finish before maintenance. Back up the data directory while services are stopped, including the SQLite database and its associated files. Rebuild and rerun the installer using the same installation and data paths. A normal upgrade stages and validates a clean service runtime before replacing the old one, replaces only application-owned code/binary folders, and preserves `DataRoot`. `-SkipDependencies` explicitly reuses an existing compatible runtime during a repair. Do not overwrite or delete data to repair application code.

@@ -62,6 +62,23 @@ def test_open_role_requires_session_and_preserves_master_workspace(integration):
     assert service.store.get_job(job["id"])["status"] == "needs_review"
 
 
+def test_missing_profile_status_directs_user_to_profile_editor(integration):
+    service, client, _, job, _, _ = integration
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    service.store.update_job(
+        job["id"],
+        resumeforge={
+            "status": "setup_required",
+            "workspace": workspace.name,
+            "master_revision": "",
+        },
+    )
+    assert client.get(f"/api/jobs/{job['id']}/resumeforge/status").json() == {
+        "status": "setup_required",
+        "attached": False,
+    }
+
+
 def test_status_and_use_attach_only_checked_pdf_without_changing_tracking(integration):
     service, client, headers, job, _, _ = integration
     base = f"/api/jobs/{job['id']}/resumeforge"
@@ -124,6 +141,41 @@ def test_missing_attached_copy_can_be_restored_from_checked_run(integration):
     restored = client.post(base + "/use", json={}, headers=headers)
     assert restored.status_code == 200
     assert Path(attached).is_file()
+
+
+def test_same_title_sync_keeps_resumes_and_cover_letters_posting_specific(integration):
+    service, client, headers, first, _, _ = integration
+    second = service.store.add_job(
+        {
+            **first,
+            "id": None,
+            "url": "https://jobs.example.com/43",
+            "description": "A separate posting for the same employer and title.",
+            "documents": {},
+            "resumeforge": {},
+            "application": {},
+        }
+    )
+    for index, job in enumerate((first, second), start=1):
+        base = f"/api/jobs/{job['id']}/resumeforge"
+        assert client.post(base + "/open", json={}, headers=headers).status_code == 200
+        workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+        run_result(workspace, str(index) * 32)
+    first_destination = service.resumeforge_bridge.resume_destination(service.DATA, first)
+    first_destination.parent.mkdir(parents=True, exist_ok=True)
+    (first_destination.parent / "Alnajjar_CoverLetter.pdf").write_bytes(
+        b"%PDF-1.4 first posting cover"
+    )
+
+    for job in (first, second):
+        response = client.post(f"/api/jobs/{job['id']}/resumeforge/use", json={}, headers=headers)
+        assert response.status_code == 200
+
+    first_saved = service.store.get_job(first["id"])["documents"]
+    second_saved = service.store.get_job(second["id"])["documents"]
+    assert first_saved["resumeforge_pdf"] != second_saved["resumeforge_pdf"]
+    assert "resumeforge_cover_pdf" in first_saved
+    assert "resumeforge_cover_pdf" not in second_saved
 
 
 def test_document_regeneration_uses_resumeforge_only(integration, monkeypatch):

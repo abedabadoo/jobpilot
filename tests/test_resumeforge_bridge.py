@@ -85,6 +85,43 @@ def test_role_workspace_uses_saved_resumeforge_profile_without_overwriting_edits
     assert json.loads((source / "draft.json").read_text(encoding="utf-8")) == original
 
 
+def test_automatic_build_lets_resumeforge_rank_full_posting(tmp_path, monkeypatch):
+    """JobPilot's lexical hints must never masquerade as user-reviewed priorities."""
+    source = tmp_path / "resumeforge-master"
+    master_draft(source)
+    captured = {}
+
+    def run(request, run_dir):
+        captured["request"] = request
+        run_dir.mkdir(parents=True)
+        return {"status": "ready"}
+
+    def export_checked(run_dir, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4\nfictional checked resume\n")
+
+    from resumeforge import desktop_support, engine
+
+    monkeypatch.setattr(bridge, "master_workspace", lambda: source)
+    monkeypatch.setattr(bridge, "downloads_folder", lambda job: tmp_path / "exports")
+    monkeypatch.setattr(engine, "run", run)
+    monkeypatch.setattr(desktop_support, "export_checked", export_checked)
+
+    result = bridge.build_resume(tmp_path / "jobpilot-data", role())
+
+    assert result["status"] == "ready"
+    assert (
+        Path(result["path"]).parent.name
+        == bridge.workspace_path(tmp_path / "jobpilot-data", role()).name
+    )
+    assert Path(result["path"]).name == "Alnajjar_Resume.pdf"
+    request = captured["request"]
+    assert request.keywords == []
+    assert request.reviewed_priorities is None
+    assert "Operations Specialist" in request.job_description
+    assert "Linux, Incident response" not in request.job_description
+
+
 def test_role_workspace_needs_a_real_posting_and_saved_profile(tmp_path):
     source = tmp_path / "master"
     master_draft(source)

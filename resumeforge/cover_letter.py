@@ -25,6 +25,19 @@ def role_folder(company: str, title: str) -> Path:
     return folder
 
 
+def workspace_role_folder(company: str, title: str, workspace: Path) -> Path:
+    """Keep JobPilot posting exports distinct while preserving standalone paths."""
+    folder = role_folder(company, title)
+    name = Path(workspace).name
+    if not re.fullmatch(r"job-[1-9][0-9]*-[0-9a-f]{12}", name):
+        return folder
+    posting = folder / name
+    if (posting.is_symlink() or posting.is_junction()
+            or not posting.resolve().is_relative_to(folder.resolve())):
+        raise ValueError("The ResumeForge posting document folder is redirected.")
+    return posting
+
+
 def draft_text(profile, company: str, title: str, keywords: str = "") -> str:
     role = profile.roles[0]
     achievements = [bullet.text.rstrip(".") + "." for bullet in role.bullets[:2]]

@@ -485,13 +485,13 @@
     $('heartbeat').textContent = relative(worker.heartbeat);
     $('searchNow').disabled = !connected;
     $('workerExtra').replaceChildren(
-      el('span', '', 'Document preparation'),
+      el('span', '', 'ResumeForge'),
       el(
         'strong',
         '',
-        worker.model_status
-          ? friendlyMessage(worker.model_status, 'Local model status unavailable')
-          : 'Uses your saved career facts',
+        worker.current
+          ? `Building ${text(worker.current, 'resume')}`
+          : 'Starts at 80% fit; the model loads only when needed',
       ),
     );
   }
@@ -1377,7 +1377,7 @@
       el(
         'p',
         'modal-note',
-        'Edit this posting with your saved ResumeForge profile. Add its checked PDF here when it is ready.',
+        'Roles at 80% fit build automatically. Use Sync after editing the resume or creating an optional letter.',
       ),
     );
     const forgeControls = el('div', 'detail-links'),
@@ -1427,6 +1427,8 @@
         if (!forge.isConnected || selectedJob !== job.id) return;
         const messages = {
           no_description: 'Add the full posting before opening it in ResumeForge.',
+          setup_required:
+            'Save a complete profile and model settings with ResumeForge profile. This resume will then start automatically.',
           not_opened: 'Open this role in ResumeForge to start.',
           not_built: 'Build and review the resume in ResumeForge, then return here.',
           building: 'ResumeForge is building the resume.',
@@ -1442,6 +1444,7 @@
             : 'Checked PDF ready. Sync it to add it to this role.',
         };
         forgeStatus.textContent = messages[result.status] || 'ResumeForge status is unavailable.';
+        forgeOpen.disabled = result.status === 'setup_required';
         forgeUse.disabled = result.status !== 'ready';
       } catch (_) {
         if (forge.isConnected) {
@@ -1619,7 +1622,7 @@
     const form = event.currentTarget,
       fields = form.elements,
       payload = {};
-    ['location', 'ollama_url', 'model'].forEach((key) => {
+    ['location'].forEach((key) => {
       payload[key] = fields.namedItem(key).value.trim();
     });
     ['search_interval_minutes', 'min_fit'].forEach((key) => {

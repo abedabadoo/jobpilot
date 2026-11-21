@@ -1,0 +1,23 @@
+{
+  "bias": -1.6823117565594292,
+  "format": 1,
+  "model_id": "paired-evidence-linear-v1",
+  "threshold": 0.58,
+  "weights": {
+    "high_lexical_overlap": 1.0115476854137195,
+    "low_lexical_overlap": 0.07056242699161064,
+    "negation_removed": 2.0212529531378696,
+    "new_number": 2.4294569314473216,
+    "new_outcome": 2.101963015696871,
+    "new_ownership": 1.8672379603274991,
+    "new_scale": 2.434535432995062,
+    "new_universal": 3.1255793097949964,
+    "observation_to_outcome": 1.705308333961133,
+    "proposal_to_delivery": 3.1255793097949964,
+    "qualification_removed_with_metric": 2.5347293086514764,
+    "support_to_owner": 1.8672379603274991,
+    "training_to_certification": 3.1215436491146122,
+    "trial_to_production": 0.07056242699161064,
+    "unit_swapped": 3.1215436491146122
+  }
+}

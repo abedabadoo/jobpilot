@@ -225,7 +225,7 @@ async function handle(message) {
       const documents = (Array.isArray(data.documents) ? data.documents : [])
         .filter(
           (doc) =>
-            ['resume_pdf', 'resume_docx'].includes(doc.kind) &&
+            doc.kind === 'resume_pdf' &&
             Number.isInteger(doc.job_id) &&
             typeof doc.name === 'string',
         )
@@ -240,11 +240,7 @@ async function handle(message) {
     }
     case 'selectDocument': {
       const jobId = Number(message.jobId);
-      if (
-        !Number.isSafeInteger(jobId) ||
-        jobId < 1 ||
-        !['resume_pdf', 'resume_docx'].includes(message.kind)
-      )
+      if (!Number.isSafeInteger(jobId) || jobId < 1 || message.kind !== 'resume_pdf')
         throw new Error('Choose a prepared resume from JobPilot.');
       // Re-read metadata and construct a fixed route; never follow download URLs supplied by page scripts.
       const data = await request('/api/extension/documents', { method: 'POST' });

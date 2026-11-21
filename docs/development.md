@@ -21,7 +21,7 @@ For Chrome extension checks, run `npm ci`, `npm run test:extension` and `npm run
 - Add regression tests for preparation queues, manual application tracking, removal tombstones, keyword extraction, email status, and external links while the worker is busy.
 - Exercise assistant workflows against local fixtures. Keep the dormant submission and remote regression tests passing; live submissions and remote sessions are not release smoke tests.
 - Keep local assets in `web/` and `remote_web/`. Preserve the loopback API boundary and the isolated remote companion.
-- Validate model-selected fact IDs against the saved profile. Include relevant role tools in editable drafts without inventing employers, dates, credentials, or numerical achievements. Render and inspect both PDF and Word exports when changing document layouts.
+- Keep JobPilot's lexical keyword display separate from ResumeForge's contextual requirement ranking. Generated inspiration may introduce editable role-specific accomplishments, but must not invent employers, dates, or credentials. Render and inspect the ResumeForge PDF when changing content planning or document layouts.
 
 ## Build
 
@@ -36,7 +36,7 @@ Build and check the Python distributions separately:
 
 The wheel check installs into a temporary directory and verifies the bundled dashboard and remote portal with fictional data. It does not start workers or open employer sites.
 
-Build native Mac packages with `python scripts/build_macos.py --output dist/macos --dmg` on the intended Mac architecture. The macOS CI matrix runs the regression suite, builds both architectures, then exercises the frozen service, PDF preparation, extension pairing, and a visible Cocoa dashboard with native menu closure. See [Mac build details](macos.md#build-and-verify).
+Build the native Intel Mac package with `python scripts/build_macos.py --output dist/macos --dmg` on an `x86_64` Mac. The macOS CI job runs the regression suite, builds that architecture, then exercises the frozen service, PDF preparation, extension pairing, and a visible Cocoa dashboard with native menu closure. See [Mac build details](macos.md#build-and-verify).
 
 Build the Chrome ZIP with `python scripts/package_extension.py`. The archive contains only the runtime allowlist. Load its extracted folder through `chrome://extensions` to use or inspect it; there is no compilation step.
 

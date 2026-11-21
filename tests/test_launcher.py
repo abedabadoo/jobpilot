@@ -50,7 +50,6 @@ def test_source_checkout_uses_the_current_python_interpreter(tmp_path, monkeypat
 def test_frozen_desktop_uses_its_installed_runtime(tmp_path, monkeypatch):
     launcher = launcher_module()
     # This test exercises Windows path selection, not host executable discovery.
-    monkeypatch.setattr(launcher, "find_ollama", lambda: "")
     monkeypatch.setattr(launcher.sys, "platform", "win32")
     monkeypatch.setenv("JOBPILOT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
@@ -60,15 +59,20 @@ def test_frozen_desktop_uses_its_installed_runtime(tmp_path, monkeypatch):
     assert Path(paths["source"]) == tmp_path
 
 
-def test_child_inference_and_browser_are_isolated_from_parent_environment(tmp_path):
-    """Dropping child-only settings would allow cloud inference or shared profiles."""
+def test_child_service_uses_combined_mode_without_starting_model_or_browser(tmp_path, monkeypatch):
+    """The resident service stays light; ResumeForge owns on-demand inference."""
     launcher = launcher_module()
+    for name in ("OLLAMA_HOST", "OLLAMA_MODELS", "PLAYWRIGHT_BROWSERS_PATH"):
+        monkeypatch.delenv(name, raising=False)
     original = os.environ.copy()
     env = launcher.child_environment(tmp_path)
-    assert env["OLLAMA_NO_CLOUD"] == "1"
-    assert env["OLLAMA_HOST"] == "127.0.0.1:11436"
-    assert Path(env["OLLAMA_MODELS"]) == tmp_path / "ollama-models"
-    assert Path(env["PLAYWRIGHT_BROWSERS_PATH"]) == tmp_path / "browsers"
+    assert env["JOBPILOT_DATA_DIR"] == str(tmp_path)
+    assert env["JOBPILOT_COMBINED"] == "1"
+    assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert "OLLAMA_HOST" not in env
+    assert "OLLAMA_MODELS" not in env
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in env
     assert os.environ == original
 
 
@@ -200,14 +204,16 @@ def test_frozen_mac_service_uses_bundle_executable_and_resources(tmp_path, monke
     assert launcher.service_command(paths) == [str(executable), "--service-child", "--port", "8765"]
 
 
-def test_missing_optional_ollama_does_not_prevent_service_launch(tmp_path, monkeypatch):
+def test_ready_service_is_reused_without_starting_another_process(tmp_path, monkeypatch):
     launcher = launcher_module()
     monkeypatch.setattr(
         launcher, "endpoint_ready", lambda url, *a, **kw: url == launcher.SERVICE_URL
     )
-    result = launcher.ensure_services({"ollama": "", "source": str(tmp_path)}, tmp_path)
-    assert result["service_reused"] is True
-    assert result["ollama_available"] is False
+    monkeypatch.setattr(
+        launcher, "start_child", lambda *a, **kw: pytest.fail("resident service restarted")
+    )
+    result = launcher.ensure_services({"source": str(tmp_path)}, tmp_path)
+    assert result == {"service_reused": True}
 
 
 def test_mac_webview_runs_cocoa_on_calling_thread_without_pystray(tmp_path, monkeypatch):
@@ -259,9 +265,18 @@ def test_service_child_dispatches_before_desktop_initialization(monkeypatch):
         sys.modules, "jobpilot.service", SimpleNamespace(main=lambda: captured.append(sys.argv[1:]))
     )
     monkeypatch.setattr(sys, "argv", ["JobPilot", "--service-child", "--port", "8765"])
+    monkeypatch.delenv("JOBPILOT_COMBINED", raising=False)
     monkeypatch.setattr(launcher, "app_paths", lambda: pytest.fail("desktop initialized"))
     assert launcher.main() == 0
     assert captured == [["--port", "8765"]]
+    assert os.environ["JOBPILOT_COMBINED"] == "1"
+    # launcher.main intentionally keeps this flag for the child process. Clear
+    # it here so later source-only legacy regression modules are not imported
+    # as a frozen combined service in the same pytest interpreter.
+    # Do not register this cleanup with monkeypatch: the flag was written by
+    # launcher.main(), so recording its current value would restore "1" at
+    # fixture teardown and contaminate later service-module reloads.
+    os.environ.pop("JOBPILOT_COMBINED", None)
 
 
 def test_dashboard_verification_dispatches_without_initializing_user_profile(tmp_path, monkeypatch):

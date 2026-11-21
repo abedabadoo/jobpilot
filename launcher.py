@@ -18,13 +18,11 @@ from urllib.request import Request, urlopen
 from jobpilot.platforms import (
     PosixDesktopInstance,
     application_data_dir,
-    find_ollama,
     notify_error,
     set_startup,
 )
 
 SERVICE_URL = "http://127.0.0.1:8765"
-OLLAMA_URL = "http://127.0.0.1:11436"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -37,16 +35,7 @@ def child_environment(data_dir: Path) -> dict[str, str]:
     env.update(
         {
             "JOBPILOT_DATA_DIR": str(data_dir),
-            "PLAYWRIGHT_BROWSERS_PATH": str(data_dir / "browsers"),
-            "OLLAMA_HOST": "127.0.0.1:11436",
-            "OLLAMA_NO_CLOUD": "1",
-            "OLLAMA_MODELS": str(data_dir / "ollama-models"),
-            "OLLAMA_CONTEXT_LENGTH": "8192",
-            "OLLAMA_FLASH_ATTENTION": "1",
-            "OLLAMA_KV_CACHE_TYPE": "q8_0",
-            "OLLAMA_NUM_PARALLEL": "1",
-            "OLLAMA_MAX_LOADED_MODELS": "1",
-            "OLLAMA_KEEP_ALIVE": "15m",
+            "JOBPILOT_COMBINED": "1",
             "PYTHONUNBUFFERED": "1",
             "PYINSTALLER_RESET_ENVIRONMENT": "1",
         }
@@ -109,7 +98,6 @@ def app_paths() -> dict:
         else Path(sys.executable)
     )
     paths.setdefault("python", str(default_python))
-    paths.setdefault("ollama", find_ollama())
     paths.setdefault(
         "desktop_exe", str(root / "JobPilot.exe") if sys.platform == "win32" else sys.executable
     )
@@ -175,21 +163,6 @@ def ensure_services(paths: dict, data: Path) -> dict:
     data.mkdir(parents=True, exist_ok=True)
     env = child_environment(data)
     status = {}
-    if not endpoint_ready(OLLAMA_URL, "/api/version"):
-        ollama = Path(paths.get("ollama") or "")
-        status["ollama_available"] = False
-        if ollama.is_file():
-            try:
-                process = start_child(
-                    [str(ollama), "serve"], cwd=ollama.parent, env=env, log_name="ollama", data=data
-                )
-                wait_endpoint(OLLAMA_URL, "/api/version", process, seconds=5)
-                status.update(ollama_pid=process.pid, ollama_available=True)
-            except (OSError, RuntimeError):
-                logging.exception("Optional local Ollama could not start; opening JobPilot anyway")
-    else:
-        status["ollama_reused"] = True
-        status["ollama_available"] = True
     if not endpoint_ready(SERVICE_URL, "/api/health", service=True):
         python = Path(paths["python"])
         source = Path(paths["source"])
@@ -409,9 +382,7 @@ def diagnostic(paths: dict, data: Path) -> dict:
         "source_present": paths.get("bundled_service", False)
         or (Path(paths["source"]) / "jobpilot" / "service.py").is_file(),
         "python_present": Path(paths["python"]).is_file(),
-        "ollama_present": Path(paths["ollama"]).is_file(),
         "service_ready": endpoint_ready(SERVICE_URL, "/api/health", service=True),
-        "ollama_ready": endpoint_ready(OLLAMA_URL, "/api/version"),
         "data_directory": str(data),
         "startup": set_startup("status", paths["desktop_exe"]),
         "paths": paths,
@@ -427,6 +398,11 @@ def main() -> int:
         return forge_main()
     if "--service-child" in sys.argv[1:]:
         sys.argv.remove("--service-child")
+        # A frozen child can also be launched directly by diagnostics and
+        # packaging smoke tests, without passing through child_environment().
+        # Set the invariant before importing service so excluded legacy
+        # browser/remote modules are never selected by the combined build.
+        os.environ["JOBPILOT_COMBINED"] = "1"
         from jobpilot.service import main as service_main
 
         service_main()

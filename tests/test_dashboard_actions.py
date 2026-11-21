@@ -181,9 +181,9 @@ def test_resolving_problem_updates_immediately_and_ignores_stale_background_poll
     expect(page.locator("#problemsList .problem-card")).to_have_count(0, timeout=1000)
     expect(page.get_by_role("heading", name="No problems to review")).to_be_visible()
     assert ("/api/problems/10/resolve", {}) in dashboard["calls"]
-    dashboard["state"]["worker"]["model_status"] = "Background refresh completed."
+    dashboard["state"]["worker"]["current"] = "Cloud Security Engineer"
     dashboard["release_poll"]()
-    expect(page.locator("#workerExtra")).to_contain_text("Background refresh completed.")
+    expect(page.locator("#workerExtra")).to_contain_text("Building Cloud Security Engineer")
     expect(page.locator("#problemsList .problem-card")).to_have_count(0)
     expect(page.locator("#problemsNavCount")).to_be_hidden()
 

@@ -69,8 +69,19 @@ def test_mac_builder_collects_service_native_keychain_and_fictional_assets(tmp_p
     assert "webview.platforms.cocoa" in command
     assert "--windowed" in command
     assert "--osx-bundle-identifier" in command
-    for asset in ["web", "remote_web", "jobpilot/candidate.json"]:
+    for asset in ["web", "jobpilot/candidate.json"]:
         assert any(str(source / asset) in item for item in command)
+    assert not any(str(source / "remote_web") in item for item in command)
+    for excluded in [
+        "jobpilot.browser",
+        "jobpilot.documents",
+        "jobpilot.remote_runtime",
+        "jobpilot.remote_notifications",
+        "pytest",
+        "_pytest",
+        "pygments",
+    ]:
+        assert excluded in command
     assert not any("data/" in item or "installed_paths.json" in item for item in command)
     assert "--distpath" in command and str(tmp_path / "dist") in command
 
@@ -105,3 +116,27 @@ def test_mac_builder_rejects_cross_platform_packaging(tmp_path, monkeypatch):
     monkeypatch.setattr(builder.sys, "platform", "win32")
     with pytest.raises(RuntimeError, match="macOS"):
         builder.build(tmp_path)
+
+
+def test_windows_installer_replaces_managed_code_with_a_small_staged_runtime():
+    root = Path(__file__).resolve().parents[1]
+    installer = (root / "scripts/Install-JobPilot.ps1").read_text(encoding="utf-8-sig")
+    runtime = (root / "requirements-runtime.lock").read_text(encoding="utf-8")
+    assert "requirements-runtime.lock" in installer
+    assert "runtime.next" in installer and "runtime.previous" in installer
+    assert "$managedFolders" in installer and "'jobpilot','resumeforge','_internal'" in installer
+    assert "DataRoot cannot be inside" in installer
+    assert "pip install" in installer
+    assert "requirements.lock')" not in installer
+    for package in ("fastapi", "python-jobspy", "pandas", "reportlab", "pdfplumber"):
+        assert package in runtime.casefold()
+    for package in (
+        "pyinstaller",
+        "pytest",
+        "pywebview",
+        "pyside6",
+        "pywebpush",
+        "qrcode",
+        "playwright",
+    ):
+        assert package not in runtime.casefold()

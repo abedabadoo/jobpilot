@@ -32,6 +32,10 @@ def test_fresh_installation_uses_a_paused_fictional_sample_profile(tmp_path, mon
     assert state["profile"]["name"] == "Jordan Morgan"
     assert state["settings"]["search_enabled"] is False
     assert state["settings"]["submission_enabled"] is False
+    assert state["settings"]["application_mode"] == "assist"
+    assert "ollama_url" not in state["settings"]
+    assert "model" not in state["settings"]
+    assert "model_status" not in state["worker"]
     assert state["jobs"] == []
 
 

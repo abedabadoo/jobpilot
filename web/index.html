@@ -431,7 +431,7 @@
           <div>
             <div class="eyebrow">SEARCH AND WORKER SETTINGS</div>
             <h1>Preferences</h1>
-            <p>Choose your target roles, search cadence and local model.</p>
+            <p>Choose your target roles and search cadence.</p>
           </div>
         </header>
         <form class="panel settings-panel" id="settingsForm">
@@ -464,22 +464,12 @@ Cloud Security Engineer"
                 required=""
                 type="number" /></label
             ><label
-              >Minimum fit <span class="label-note">0–100</span
-              ><input max="100" min="0" name="min_fit" required="" type="number"
+              >Opportunity list minimum <span class="label-note">0–80</span
+              ><input max="80" min="0" name="min_fit" required="" type="number"
             /></label>
-            <div class="form-section-title full">
-              <h2>Local model</h2>
-              <p>Application preparation uses your local Ollama service.</p>
-            </div>
-            <label
-              >Ollama URL<input
-                name="ollama_url"
-                placeholder="http://127.0.0.1:11436"
-                required=""
-                type="url" /></label
-            ><label
-              >Model<input name="model" placeholder="qwen3.5:9b" readonly="" required=""
-            /></label>
+            <p class="form-note full">
+              Roles scoring 80 or higher are always kept and sent to ResumeForge.
+            </p>
             <div class="form-section-title full">
               <h2>Discovery &amp; startup</h2>
               <p>Choose when searches run on this computer.</p>

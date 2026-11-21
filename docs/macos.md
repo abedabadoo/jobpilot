@@ -14,7 +14,7 @@ The dashboard opens without Ollama or a model. Discovery, email, manual tracking
 
 ## Data and desktop behavior
 
-Data is stored in `~/Library/Application Support/JobPilot`, outside the app bundle. The combined editor reuses the ResumeForge profile in `~/Library/Application Support/ResumeForge/workspace`. Checked PDFs go to `~/Downloads/JobPilot RF Docs/Company - Role`. Set `JOBPILOT_DATA_DIR` to use another JobPilot data location when starting from Terminal. Logs are under `logs` in that directory.
+Data is stored in `~/Library/Application Support/JobPilot`, outside the app bundle. The combined editor reuses the ResumeForge profile in `~/Library/Application Support/ResumeForge/workspace`. Checked PDFs go below `~/Downloads/JobPilot RF Docs/Company - Role`, with an automatic posting-specific subfolder preventing same-title postings from overwriting one another. Set `JOBPILOT_DATA_DIR` to use another JobPilot data location when starting from Terminal. Logs are under `logs` in that directory.
 
 The native JobPilot menu can open the dashboard. Closing or quitting the dashboard leaves its independent local service running. The next launch reuses the service at `http://127.0.0.1:8765`. A second desktop launch signals the existing dashboard rather than starting another desktop. **Stop worker** in the dashboard stops scheduled work; closing a window does not stop it.
 
@@ -28,17 +28,11 @@ For a diagnostic report without opening a dashboard:
 
 The report includes local installation paths. Review it before sharing.
 
-## Optional local model
+## Optional writing model
 
-Install Ollama separately using its official [Mac download](https://ollama.com/download/mac). JobPilot looks for `JOBPILOT_OLLAMA`, `ollama` on PATH, `/opt/homebrew/bin/ollama`, `/usr/local/bin/ollama`, and the Ollama app under `/Applications` or `~/Applications`.
+Model configuration belongs to ResumeForge. Open **ResumeForge profile**, choose its model settings, and select either offline mode, an Ollama endpoint, or an OpenAI-compatible local endpoint. JobPilot does not start or poll Ollama and does not load a second model for search or fit scoring.
 
-JobPilot runs its optional Ollama instance on `127.0.0.1:11436` with cloud inference disabled and model storage in its data directory. A normal Ollama instance on the default port `11434` is separate. To install the default model into JobPilot's isolated model directory, first launch JobPilot, then explicitly run:
-
-```bash
-OLLAMA_HOST=127.0.0.1:11436 ollama pull qwen3.5:9b
-```
-
-This is an optional large download. You can choose another locally available model in Settings. If Ollama was installed after JobPilot started, restart the dashboard to let it discover and start the optional local server. `JOBPILOT_OLLAMA` may be an absolute executable path when PATH does not contain Ollama.
+The Intel-laptop runtime, when installed, uses the ResumeForge-tuned Qwen 3.5 4B Q4 model with an 8K context and four CPU threads. ResumeForge starts it only for generation, processes one resume at a time, and lets it sleep after an idle period. This preserves the full writing and review passes without keeping several gigabytes resident during ordinary monitoring. Larger models may be configured on a stronger computer through the same editor; the JobPilot workflow does not change.
 
 ## Run from source
 
@@ -64,7 +58,7 @@ python scripts/build_macos.py --output dist/macos
 python scripts/build_macos.py --output dist/macos --dmg
 ```
 
-The output ZIP contains `JobPilot.app`. The installer is copied next to it. All PyInstaller intermediate files stay below the chosen output directory. The bundle launches its own executable with `--service-child`; it never searches for a user-installed Python. Only repository web assets and the fictional `jobpilot/candidate.json` starter profile are included. User data, imported profiles, credentials and `installed_paths.json` are excluded.
+The output ZIP contains `JobPilot.app`. The installer is copied next to it. All PyInstaller intermediate files stay below the chosen output directory. The bundle launches its own executable with `--service-child`; it never searches for a user-installed Python. Only repository web assets and fictional starter profiles are included. User data, imported profiles, credentials and `installed_paths.json` are excluded.
 
 By default PyInstaller uses ad hoc signing. Set `JOBPILOT_CODESIGN_IDENTITY` to an installed Apple signing identity to request that identity during packaging. Apple Developer ID signing and notarization require real Apple credentials and are separate release steps. Do not label a build notarized unless it has actually passed Apple's notarization service and the ticket has been stapled and checked.
 

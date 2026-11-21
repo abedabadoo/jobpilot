@@ -15,6 +15,7 @@ from pathlib import Path
 _RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
 _MAX_REPORT_BYTES = 5 * 1024 * 1024
 _MAX_PDF_BYTES = 15 * 1024 * 1024
+_MAX_MASTER_DRAFT_BYTES = 10 * 1024 * 1024
 _STALLED_RUN_NS = 30 * 60 * 1_000_000_000
 
 
@@ -28,6 +29,20 @@ def master_workspace() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / (
         "ResumeForge/workspace"
     )
+
+
+def master_revision() -> str:
+    """Return a stable revision for the saved master draft, or an empty value."""
+    draft = master_workspace() / "draft.json"
+    try:
+        if draft.is_symlink() or not draft.is_file():
+            return ""
+        size = draft.stat().st_size
+        if not 2 <= size <= _MAX_MASTER_DRAFT_BYTES:
+            return ""
+        return hashlib.sha256(draft.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def windows_install_dir() -> Path | None:
@@ -127,7 +142,11 @@ def checked_copy(path: str, digest: str, data_dir: Path) -> bool:
     try:
         return (
             not applications.is_symlink()
+            and not applications.is_junction()
+            and not downloads.is_symlink()
+            and not downloads.is_junction()
             and not candidate.is_symlink()
+            and not candidate.is_junction()
             and (
                 candidate.resolve().is_relative_to(applications.resolve())
                 or candidate.resolve().is_relative_to(downloads.resolve())
@@ -234,6 +253,19 @@ def downloads_folder(job: dict) -> Path:
     return role_folder(posting_company(job), str(job.get("title") or "Role"))
 
 
+def resume_destination(data_dir: Path, job: dict) -> Path:
+    """Return a friendly filename in a posting-specific export directory."""
+    role = downloads_folder(job)
+    folder = role / workspace_path(data_dir, job).name
+    if (
+        folder.is_symlink()
+        or folder.is_junction()
+        or not folder.resolve().is_relative_to(role.resolve())
+    ):
+        raise ValueError("The ResumeForge posting document folder is redirected.")
+    return folder / "Alnajjar_Resume.pdf"
+
+
 def build_resume(data_dir: Path, job: dict) -> dict:
     """Run the bundled ResumeForge engine; a cover letter requires a separate UI action."""
     from uuid import uuid4
@@ -248,15 +280,20 @@ def build_resume(data_dir: Path, job: dict) -> dict:
         profile=Profile.model_validate(draft["profile"]),
         settings=ModelSettings.model_validate(draft["settings"]),
         job_description=draft["job_description"],
-        reviewed_priorities=[x.strip() for x in draft.get("keywords", "").split(",") if x.strip()],
+        # JobPilot's keyword list is a fast lexical summary for the dashboard,
+        # not a set the user reviewed. Passing it as reviewed priorities skips
+        # ResumeForge's contextual posting analysis and can make generic tools
+        # outrank the role's actual responsibilities. Automatic runs therefore
+        # analyze the full posting themselves. Priorities become reviewed only
+        # after the user confirms them in the ResumeForge editor.
+        keywords=[],
+        reviewed_priorities=None,
     )
     run_dir = workspace / "runs" / uuid4().hex
     result = run(request, run_dir)
     if result["status"] != "ready":
         return {"status": result["status"], "workspace": workspace.name}
-    folder = downloads_folder(job)
-    folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / "Alnajjar_Resume.pdf"
+    destination = resume_destination(data_dir, job)
     export_checked(run_dir, destination)
     draft["last_run"] = run_dir.name
     _atomic_json(workspace / "draft.json", draft)

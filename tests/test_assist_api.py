@@ -47,6 +47,20 @@ def test_external_link_honors_the_visible_posting_target(assist, monkeypatch):
     assert opened == [job["url"]]
 
 
+def test_invalid_assist_browser_tab_is_a_controlled_error_without_job_mutation(assist):
+    service, client, headers = assist
+    job = add(service, url="http://127.0.0.1/private-job")
+    before = service.store.get_job(job["id"])
+    response = client.post(
+        f"/api/jobs/{job['id']}/browser-tab",
+        headers=headers,
+        json={"purpose": "posting"},
+    )
+    assert response.status_code == 400
+    assert "public posting link" in response.json()["detail"]
+    assert service.store.get_job(job["id"]) == before
+
+
 def test_undo_applied_before_queued_regeneration_does_not_resurrect_applied_state(
     assist, monkeypatch
 ):

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLineEdit,
 
 from .desktop_preview import PagePreview, plain_label
 from .desktop_support import export_checked, load_draft, save_draft
-from .cover_letter import draft_text, export_pdf as export_cover_pdf, role_folder
+from .cover_letter import draft_text, export_pdf as export_cover_pdf, workspace_role_folder
 from .engine import run
 from .ideas import IdeaRequest, brainstorm
 from .importing import MAX_BYTES, import_document
@@ -730,7 +730,9 @@ class MainWindow(QMainWindow):
         if not self._can_export() or self.worker is not None:
             return
         if self.job_company and self.job_title:
-            destination = role_folder(self.job_company, self.job_title) / "Alnajjar_Resume.pdf"
+            destination = workspace_role_folder(
+                self.job_company, self.job_title, self.data_dir
+            ) / "Alnajjar_Resume.pdf"
         else:
             path, _ = QFileDialog.getSaveFileName(self, "Save checked resume", "Alnajjar_Resume.pdf", "PDF (*.pdf)")
             if not path:
@@ -763,7 +765,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(controls)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        destination = role_folder(company, title) / "Alnajjar_CoverLetter.pdf"
+        destination = workspace_role_folder(company, title, self.data_dir) / "Alnajjar_CoverLetter.pdf"
         try:
             export_cover_pdf(editor.toPlainText(), self.profile, destination)
         except (ValueError, OSError) as exc:

@@ -29,6 +29,8 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
         profile = json.loads(
             (Path(__file__).resolve().parents[1] / "resumeforge/data/abu.profile.json").read_text()
         )
+        assert profile["name"] == "Morgan Example"
+        assert str(profile.get("contact", "")).endswith("example.invalid/morgan")
         profile["name"] = "Smoke Candidate"
         (master / "draft.json").write_text(
             json.dumps({"version": 2, "profile": profile, "settings": {"provider": "none"}})
@@ -91,7 +93,6 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                 assert b"Chrome autofill" in request("/", binary_response=True)
                 token = request("/api/session")["token"]
                 dashboard_headers = {"X-JobPilot-Token": token}
-                request("/api/settings", {"ollama_url": "http://127.0.0.1:9"}, dashboard_headers)
                 request(
                     "/api/import",
                     {

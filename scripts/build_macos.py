@@ -26,8 +26,6 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         str(source / "assets/jobpilot.ico"),
         "--osx-bundle-identifier",
         "com.jobpilot.desktop",
-        "--target-arch",
-        platform.machine(),
         "--distpath",
         str(output),
         "--workpath",
@@ -36,17 +34,14 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         str(work / "spec"),
     ]
     # Dynamic service imports and plugin backends must survive freezing. In
-    # particular, pywebview imports Cocoa lazily and keyring discovers backends
-    # from package metadata rather than the launcher's normal import graph.
+    # particular, pywebview imports Cocoa lazily. ResumeForge stays collected
+    # as one quality-critical unit so its fonts and PDF resources cannot drift.
+    # The standard hooks already collect the ReportLab modules actually used;
+    # collecting that whole distribution also pulls charts, samples and tests.
     for package in (
-        "jobpilot",
         "webview",
-        "keyring",
         "jobspy",
         "curl_cffi",
-        "playwright",
-        "docx",
-        "reportlab",
         "resumeforge",
         "pypdfium2",
         "pdfplumber",
@@ -65,10 +60,41 @@ def build_command(source: Path, output: Path, work: Path) -> list[str]:
         "PySide6.QtWidgets",
     ):
         command.extend(["--hidden-import", module])
+    # The combined Intel app is an assist workflow. Chrome autofill replaces
+    # JobPilot's retained legacy Playwright submitter, while ResumeForge is the
+    # sole document engine. Excluding both avoids shipping dead browser and
+    # Word-generation stacks without changing resume quality.
+    for module in (
+        "jobpilot.browser",
+        "jobpilot.documents",
+        "jobpilot.interventions",
+        "jobpilot.remote",
+        "jobpilot.remote_auth",
+        "jobpilot.remote_gateway",
+        "jobpilot.remote_notifications",
+        "jobpilot.remote_runtime",
+        "keyring.backends.SecretService",
+        "keyring.backends.Windows",
+        "keyring.backends.chainer",
+        "keyring.backends.kwallet",
+        "keyring.backends.libsecret",
+        "keyring.backends.null",
+        "keyring.devpi_client",
+        "keyring.http",
+        "keyring.testing",
+        "pytest",
+        "_pytest",
+        "pygments",
+        "qrcode",
+        "resumeforge.server",
+        "resumeforge.cli",
+        "resumeforge.mac_updates",
+        "resumeforge.windows_updates",
+    ):
+        command.extend(["--exclude-module", module])
     command.extend(["--copy-metadata", "keyring"])
     for source_name, destination in (
         ("web", "jobpilot/_assets/web"),
-        ("remote_web", "jobpilot/_assets/remote_web"),
         ("jobpilot/candidate.json", "jobpilot"),
         ("jobpilot/greenhouse_boards.json", "jobpilot"),
         ("LICENSE", "."),
