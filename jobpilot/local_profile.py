@@ -54,9 +54,7 @@ def read_local_profile(master_dir: Path) -> dict | None:
         (
             part
             for part in segments
-            if sum(char.isdigit() for char in part) >= 10
-            and "@" not in part
-            and "http" not in part
+            if sum(char.isdigit() for char in part) >= 10 and "@" not in part and "http" not in part
         ),
         "",
     )
