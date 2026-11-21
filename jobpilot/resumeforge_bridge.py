@@ -207,11 +207,6 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
         or not isinstance(settings, dict)
     ):
         raise ValueError("Save a complete profile and model settings in ResumeForge first.")
-    raw_keywords = job.get("keywords") or {}
-    terms = raw_keywords.get("terms", []) if isinstance(raw_keywords, dict) else []
-    keywords = ", ".join(
-        dict.fromkeys(str(term).strip() for term in terms[:100] if str(term).strip())
-    )
     draft = {
         "version": 2,
         "analyzed": False,
@@ -220,7 +215,7 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
         "settings": settings,
         "job_description": _job_description(job),
         "edit_request": "",
-        "keywords": keywords,
+        "keywords": "",  # Preserve ResumeForge’s own posting analysis.
         "job_company": posting_company(job),
         "job_title": str(job.get("title") or ""),
     }

@@ -27,6 +27,7 @@ from . import __version__, resumeforge_bridge
 from .assets import asset_directory
 from .autofill import ExtensionAPI
 from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
+from .local_profile import adopt_local_profile
 from .platforms import SystemSleepInhibitor, application_data_dir
 from .store import Store
 
@@ -76,6 +77,16 @@ DEFAULTS = {
 for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]:
     if store.get(key) is None:
         store.set(key, default)
+# Personal builds import from the user's local saved ResumeForge source only.
+# The shared repository's fictional candidate.json remains unchanged.
+if os.environ.get("JOBPILOT_TESTING") != "1":
+    adopt_local_profile(
+        store,
+        resumeforge_bridge.master_workspace(),
+        score_job,
+        {**DEFAULTS, **(store.get("settings", {}) or {})},
+    )
+
 stored_preferences = store.get("settings", {})
 if (
     os.environ.get("JOBPILOT_COMBINED") == "1"
@@ -932,6 +943,13 @@ def process_document_queue():
 
 def application_loop():
     while not stop_event.wait(2):
+        if store.get("profile", {}).get("sample_profile") is True:
+            adopt_local_profile(
+                store,
+                resumeforge_bridge.master_workspace(),
+                score_job,
+                settings(),
+            )
         # Resume creation is independent of the deprecated application-mode
         # switch. Every eligible role is handled by the same serialized
         # ResumeForge queue, while form submission remains disabled in assist

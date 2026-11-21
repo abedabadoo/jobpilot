@@ -69,7 +69,7 @@ def test_role_workspace_uses_saved_resumeforge_profile_without_overwriting_edits
     assert imported["settings"] == original["settings"]
     assert "Operations Specialist" in imported["job_description"]
     assert "Monitor cloud services" in imported["job_description"]
-    assert imported["keywords"] == "Linux, Incident response"
+    assert imported["keywords"] == ""  # Auto-discovered terms are not user-reviewed priorities
     assert "unrelated saved posting" not in imported["job_description"]
     assert imported["analyzed"] is False
     imported["edit_request"] = "My edits for this role"
