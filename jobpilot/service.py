@@ -81,7 +81,9 @@ for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]
 # The shared repository's fictional candidate.json remains unchanged.
 if os.environ.get("JOBPILOT_TESTING") != "1":
     adopt_local_profile(
-        store, resumeforge_bridge.master_workspace(), score_job,
+        store,
+        resumeforge_bridge.master_workspace(),
+        score_job,
         {**DEFAULTS, **(store.get("settings", {}) or {})},
     )
 
@@ -943,7 +945,10 @@ def application_loop():
     while not stop_event.wait(2):
         if store.get("profile", {}).get("sample_profile") is True:
             adopt_local_profile(
-                store, resumeforge_bridge.master_workspace(), score_job, settings(),
+                store,
+                resumeforge_bridge.master_workspace(),
+                score_job,
+                settings(),
             )
         # Resume creation is independent of the deprecated application-mode
         # switch. Every eligible role is handled by the same serialized
