@@ -183,6 +183,27 @@ def test_standalone_postings_with_identical_titles_are_distinct(context):
     assert second.parent == context.resume.parent.parent
 
 
+def test_short_letter_expands_in_place_with_measured_word_budget(context, tmp_path, monkeypatch):
+    full, research = passing_prose(context, tmp_path)
+    paragraphs = full.paragraphs.copy()
+    additions = []
+    for index, paragraph in enumerate(paragraphs[:-1]):
+        before, last = paragraph.rsplit(". ", 1)
+        paragraphs[index] = before + "."
+        additions.append({"paragraph": index + 1, "sentence": last})
+    shortened = full.model_copy(update={"paragraphs": paragraphs})
+    monkeypatch.setattr(letters, "research", lambda *args: research)
+    writer = Mock(side_effect=[shortened.model_dump(), {"additions": additions}, {"issues": []}])
+    monkeypatch.setattr(letters, "call_json", writer)
+    assert context.generate(0)["ready"]
+    assert [call.kwargs["output_model"] for call in writer.call_args_list] == [
+        letters.LetterProse,
+        letters.LetterExpansion,
+        letters.LetterReview,
+    ]
+    assert json.loads(writer.call_args_list[1].args[2])["wanted_additional_words"] > 0
+
+
 def test_public_research_sources_are_role_relevant_and_recruiter_is_explicit(monkeypatch):
     posting = "https://jobs.signalorchard.example/jobs/platform"
     news = "https://signalorchard.example/news"
