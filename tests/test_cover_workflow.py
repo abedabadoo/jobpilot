@@ -287,6 +287,17 @@ def test_review_repairs_only_the_unsupported_sentence_without_resetting_fit(
     ]
 
 
+def test_relevant_examples_must_be_visible_in_the_final_checked_resume():
+    iam = "Automated IAM access checks in release pipelines and documented permission changes."
+    other = "Organized office inventory records in a shared spreadsheet."
+    unprinted = "Managed the enterprise IAM security program."
+    assert letters._relevant_rendered_examples(
+        [{"text": iam}, {"text": other}, {"text": unprinted}],
+        "Signal Orchard\n" + iam.replace("release pipelines", "release\npipelines") + "\n" + other,
+        "Identity and Access Management engineer automating IAM permission checks.",
+    ) == [iam]
+
+
 def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monkeypatch):
     from test_api import api
 
@@ -316,8 +327,9 @@ def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monke
     context = service.resumeforge_bridge.cover_workspace(service.DATA, job)
     prose, research = passing_prose(context, tmp_path)
     monkeypatch.setattr(letters, "research", Mock(return_value=research))
+    with_missing_source = prose.model_copy(update={"source_number": 1})
     monkeypatch.setattr(
-        letters, "call_json", Mock(side_effect=[prose.model_dump(), {"issues": []}])
+        letters, "call_json", Mock(side_effect=[with_missing_source.model_dump(), {"issues": []}])
     )
     token = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}
     route = f"/api/jobs/{job['id']}/cover-letter"
@@ -335,6 +347,7 @@ def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monke
         time.sleep(0.04)
     assert status["task"]["state"] == "ready", status["task"]["message"]
     assert status["ready"] and context.state()["ready"]
+    assert status["draft"]["source_used"] is None
     image = client.get(route + "/preview")
     assert image.status_code == 200 and image.content.startswith(b"\x89PNG")
     result = client.post(route, headers=token, json={"action": "generate", "revision": 1})

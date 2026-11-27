@@ -263,10 +263,12 @@ def test_bundled_engine_exports_checked_pdf_to_role_folder(tmp_path, monkeypatch
     profile["name"] = "Smoke Candidate"
     master = tmp_path / "master"
     master.mkdir()
-    (master / "draft.json").write_text(
-        json.dumps({"profile": profile, "settings": {"provider": "none"}}),
-        encoding="utf-8",
+    saved_settings = {"provider": "none", "draft_mode": "grounded", "wording_policy": "verified"}
+    master_path = master / "draft.json"
+    master_path.write_text(
+        json.dumps({"profile": profile, "settings": saved_settings}), encoding="utf-8"
     )
+    original_master = master_path.read_bytes()
     folder = tmp_path / "JobPilot RF Docs" / "Signal Orchard Studio - Platform Engineer"
     monkeypatch.setattr(resumeforge_bridge, "master_workspace", lambda: master)
     monkeypatch.setattr(resumeforge_bridge, "downloads_folder", lambda job: folder)
@@ -285,6 +287,15 @@ def test_bundled_engine_exports_checked_pdf_to_role_folder(tmp_path, monkeypatch
     assert automatic.read_bytes().startswith(b"%PDF-")
     assert Path(result["path"]) == automatic
     assert not (folder / "Alnajjar_CoverLetter.pdf").exists()
+    report = json.loads(
+        (workspace / "runs" / result["run_id"] / "result.json").read_text(encoding="utf-8")
+    )["report"]
+    assert report["draft_mode"] == "inspiration"
+    assert (
+        json.loads((workspace / "draft.json").read_text(encoding="utf-8"))["settings"]
+        == saved_settings
+    )
+    assert master_path.read_bytes() == original_master
 
     letter = automatic.parent / "Alnajjar_CoverLetter.pdf"
     candidate = Profile.model_validate(profile)

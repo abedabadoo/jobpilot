@@ -44,7 +44,7 @@ The PyInstaller output contains the desktop launcher; installing also supplies t
 
 1. Replace the fictional profile with your contact details and career history.
 2. Set target roles and location, then select **Start monitoring** above the opportunities. Choose a check interval; the next check and results from each source appear in that panel. **Search now** runs a single check even while monitoring is paused.
-3. Roles at 80% fit or above automatically enter the ResumeForge queue. Use **Review** to inspect fit, job-description keywords, and the checked resume PDF.
+3. Roles at 80% fit or above automatically enter the ResumeForge queue in **Generate new example achievements** mode. Use **Review** to inspect fit, job-description keywords, and the checked resume PDF.
 4. Open the job in your usual browser and apply there. Click **Applied?** when finished; the role moves to Applied.
 
 ### Using ResumeForge for a role
@@ -59,7 +59,7 @@ Closing the desktop window hides it to the tray. **Quit dashboard** leaves the w
 
 ### Cover letters
 
-Open **Review** for a role with a checked resume and choose **Generate Cover Letter**. ResumeForge offers the same action. A local ResumeForge model is required. The writer uses the checked PDF for that posting, and each initial generation or **Fresh AI draft** attempts to verify public company research. Add an official company website or article in the editor if automatic discovery comes up empty. When a recruiter or hiring manager cannot be verified from the posting, the greeting is **Dear Hiring Team,**.
+Open **Review** for a role with a checked resume and choose **Generate Cover Letter**. ResumeForge offers the same action. A local ResumeForge model is required. The writer uses the checked PDF for that posting, including relevant example achievements on the page, and each initial generation or **Fresh AI draft** attempts to verify public company research. Add an official company website or article in the editor if automatic discovery comes up empty. When a recruiter or hiring manager cannot be verified from the posting, the greeting is **Dear Hiring Team,**.
 
 The preview shows the saved one-page PDF. **Save edits and update PDF** keeps your wording and checks the same fixed page geometry. If the text needs further edits, the previous PDF stays available and the draft is marked as needing an update. **Fresh AI draft** requires confirmation before it can replace an existing letter. Use **Research sources** to review the URLs and dates. If the resume changes, the editor identifies the older letter and offers a fresh draft.
 

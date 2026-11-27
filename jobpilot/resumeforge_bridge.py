@@ -319,9 +319,15 @@ def build_resume(data_dir: Path, job: dict) -> dict:
     draft_path = workspace / "draft.json"
     saved_input = draft_path.read_bytes()
     draft = json.loads(saved_input)
+    # Match the editor's Generate new example achievements mode for unattended
+    # builds. The user's master profile and per-role editing preferences stay
+    # in the saved draft.
+    settings = ModelSettings.model_validate(draft["settings"]).model_copy(
+        update={"draft_mode": "inspiration", "wording_policy": "rewrite"}
+    )
     request = RunRequest(
         profile=Profile.model_validate(draft["profile"]),
-        settings=ModelSettings.model_validate(draft["settings"]),
+        settings=settings,
         job_description=draft["job_description"],
         # JobPilot's keyword list is a fast lexical summary for the dashboard,
         # not a set the user reviewed. Passing it as reviewed priorities skips
