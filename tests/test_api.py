@@ -345,3 +345,88 @@ def test_import_cannot_supply_status_or_upload_paths(tmp_path, monkeypatch):
 
 def service_metrics(client):
     return client.get("/api/state").json()["metrics"]
+
+
+def test_sync_does_not_attach_stale_cover_letter_after_resume_change(tmp_path, monkeypatch):
+    from hashlib import sha256
+    from types import SimpleNamespace
+
+    from resumeforge import desktop_support
+
+    client = api(tmp_path / "data", monkeypatch)
+    from jobpilot import service
+
+    job = service.store.add_job(
+        {
+            "url": "https://example.com/jobs/security",
+            "title": "Security Engineer",
+            "company": "Example Company",
+            "description": "Security automation and incident response.",
+        }
+    )
+    folder = tmp_path / "exports" / "job-1-abcdef123456"
+    folder.mkdir(parents=True)
+    resume = folder / "Alnajjar_Resume.pdf"
+    cover = folder / "Alnajjar_CoverLetter.pdf"
+    cover.write_bytes(b"%PDF-1.4\nprevious resume's cover letter\n%%EOF\n")
+    contents = b"%PDF-1.4\nnewly checked resume\n%%EOF\n"
+    run = tmp_path / "runs" / ("a" * 32)
+    run.mkdir(parents=True)
+    (run / "resume.pdf").write_bytes(contents)
+
+    monkeypatch.setattr(service.resumeforge_bridge, "workspace_path", lambda *_: tmp_path / "role")
+    monkeypatch.setattr(service.resumeforge_bridge, "validate_workspace", lambda *_: None)
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "checked_run",
+        lambda *_: {
+            "status": "ready",
+            "run_id": run.name,
+            "sha256": sha256(contents).hexdigest(),
+            "pdf": run / "resume.pdf",
+        },
+    )
+    monkeypatch.setattr(service.resumeforge_bridge, "resume_destination", lambda *_: resume)
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "checked_copy",
+        lambda path, digest, _: (
+            Path(path).is_file() and sha256(Path(path).read_bytes()).hexdigest() == digest
+        ),
+    )
+    monkeypatch.setattr(
+        desktop_support,
+        "export_checked",
+        lambda _run, destination: destination.write_bytes(contents),
+    )
+
+    # The previous PDF still looks valid, but the draft is bound to the old resume.
+    letter_state = {"ready": False, "pdf": str(cover)}
+    monkeypatch.setattr(
+        service.resumeforge_bridge,
+        "cover_workspace",
+        lambda *_: SimpleNamespace(state=lambda: letter_state),
+    )
+    headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}
+    route = f"/api/jobs/{job['id']}/resumeforge/use"
+    response = client.post(route, headers=headers)
+    assert response.status_code == 200
+    assert service.store.get_job(job["id"])["documents"] == {"resumeforge_pdf": str(resume)}
+
+    # A validated letter for the exact checked resume is allowed.
+    letter_state = {"ready": True, "pdf": str(cover)}
+    response = client.post(route, headers=headers)
+    assert response.status_code == 200
+    assert service.store.get_job(job["id"])["documents"] == {
+        "resumeforge_pdf": str(resume),
+        "resumeforge_cover_pdf": str(cover),
+    }
+
+    # An unreadable letter workspace should not block syncing the resume.
+    def unavailable(*_):
+        raise ValueError("Letter workspace is unavailable")
+
+    monkeypatch.setattr(service.resumeforge_bridge, "cover_workspace", unavailable)
+    response = client.post(route, headers=headers)
+    assert response.status_code == 200
+    assert service.store.get_job(job["id"])["documents"] == {"resumeforge_pdf": str(resume)}

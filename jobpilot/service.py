@@ -1903,9 +1903,14 @@ def use_resumeforge_pdf(job_id: int):
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     documents = {"resumeforge_pdf": str(destination)}
-    cover = destination.parent / "Alnajjar_CoverLetter.pdf"
-    if cover.is_file() and cover.stat().st_size > 5 and cover.read_bytes()[:5] == b"%PDF-":
-        documents["resumeforge_cover_pdf"] = str(cover)
+    # An older letter can remain beside a newly exported resume. Only attach
+    # it when the saved letter is verified against this exact checked resume.
+    try:
+        cover_state = resumeforge_bridge.cover_workspace(DATA, job).state()
+    except (OSError, ValueError, KeyError, sqlite3.Error):
+        cover_state = {}
+    if cover_state.get("ready"):
+        documents["resumeforge_cover_pdf"] = cover_state["pdf"]
     job = require_job(job_id)
     already_attached = (
         (job.get("resumeforge") or {}).get("run_id") == result["run_id"]
