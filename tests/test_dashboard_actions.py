@@ -225,7 +225,7 @@ def test_dashboard_distinguishes_render_errors_from_service_errors(dashboard):
 def test_dashboard_only_reads_keywords_when_a_role_is_opened(dashboard):
     page = dashboard["page"]
     assert dashboard["keyword_reads"] == 0
-    page.get_by_role("button", name="Cloud Security Engineer").click()
+    page.get_by_role("button", name="Review", exact=True).click()
     expect(page.locator("#modal .keyword-chip", has_text="AWS")).to_be_visible()
     assert dashboard["keyword_reads"] == 1
 
