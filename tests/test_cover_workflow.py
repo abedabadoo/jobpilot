@@ -162,7 +162,11 @@ def test_rejected_claim_and_interrupted_rewrite_leave_the_previous_pdf(
             ]
         }
     )
-    model.side_effect = lambda *args, **kwargs: unsupported.model_dump()
+    model.side_effect = lambda *args, **kwargs: (
+        {"changes": []}
+        if kwargs["output_model"] is letters.LetterCorrections
+        else unsupported.model_dump()
+    )
     with pytest.raises(ValueError, match="99999"):
         context.generate(ready["revision"], confirmed=True)
     model.side_effect = RuntimeError("The local model stopped.")
@@ -247,6 +251,40 @@ def test_public_research_sources_are_role_relevant_and_recruiter_is_explicit(mon
     )
     assert not failure["sources"] and not failure["hiring_manager"]
     assert "No relevant company source" in failure["message"]
+
+
+def test_review_repairs_only_the_unsupported_sentence_without_resetting_fit(
+    context, tmp_path, monkeypatch
+):
+    full, research = passing_prose(context, tmp_path)
+    raw = full.paragraphs[1].split(". ", 1)[0] + "."
+    unsupported = "I personally managed the access control program for all customers across our development and production platforms."
+    flagged = full.paragraphs.copy()
+    flagged[1] = flagged[1].replace(raw, unsupported, 1)
+    draft = full.model_copy(update={"paragraphs": flagged})
+    monkeypatch.setattr(letters, "research", lambda *args: research)
+    model = Mock(
+        side_effect=[
+            draft.model_dump(),
+            {"issues": [f"{unsupported} The checked resume does not establish this program."]},
+            {"changes": [{"paragraph": 2, "original": unsupported, "replacement": raw}]},
+            {"issues": []},
+        ]
+    )
+    monkeypatch.setattr(letters, "call_json", model)
+    assert letters._typeset(
+        context, letters._merge_text(context, draft, research), tmp_path / "before.pdf"
+    )["full_page_passed"]
+    result = context.generate(0)
+    assert result["ready"] and result["draft"]["text"] == letters._merge_text(
+        context, full, research
+    )
+    assert [call.kwargs["output_model"] for call in model.call_args_list] == [
+        letters.LetterProse,
+        letters.LetterReview,
+        letters.LetterCorrections,
+        letters.LetterReview,
+    ]
 
 
 def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monkeypatch):
