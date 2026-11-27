@@ -164,14 +164,19 @@ def _description(value) -> str:
     )
 
 
+def _linkedin_posting_id(url: str) -> str:
+    parts = urlsplit(url)
+    if parts.hostname not in {"linkedin.com", "www.linkedin.com"}:
+        return ""
+    route = re.fullmatch(r"/(?:comm/)?jobs/view/(?:[^/]+-)?(\d{1,20})/?", parts.path)
+    return route[1] if route else ""
+
+
 def _canonical_link(url: str) -> str:
     parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
     path = parts.path
-    if host == "linkedin.com" or host.endswith(".linkedin.com"):
-        found = re.search(r"/jobs/view/(\d+)", path)
-        if found:
-            return f"https://www.linkedin.com/jobs/view/{found[1]}/"
+    if identity := _linkedin_posting_id(url):
+        return f"https://www.linkedin.com/jobs/view/{identity}/"
     query = [
         (key, value)
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
@@ -206,6 +211,81 @@ def _jsonld_postings(value):
         for item in value.values():
             if isinstance(item, (dict, list)):
                 yield from _jsonld_postings(item)
+
+
+def _linkedin_posting(soup, requested_url, final_url):
+    identity = _linkedin_posting_id(requested_url)
+    if not identity or _linkedin_posting_id(final_url) != identity:
+        return None
+    canonical = soup.select_one("link[rel=canonical][href]")
+    main = soup.find("main")
+    if not canonical or _linkedin_posting_id(urljoin(final_url, canonical["href"])) != identity:
+        return None
+    if not main:
+        return None
+    title = main.select_one("h1.top-card-layout__title")
+    company = main.select_one(".topcard__org-name-link, .topcard__org-name")
+    description = main.select_one(".description__text .show-more-less-html__markup")
+    if not (title and company and description):
+        return None
+    location = main.select_one(".topcard__flavor--bullet")
+    closed = any(
+        "no longer accepting applications" in status.get_text(" ", strip=True).casefold()
+        for status in main.select(".closed-job, .top-card-layout [class*=status]")
+    )
+    return _job(
+        "linkedin",
+        final_url,
+        title.get_text(" ", strip=True),
+        company.get_text(" ", strip=True),
+        location.get_text(" ", strip=True) if location else "",
+        str(description),
+        requisition_id=identity,
+        posting_closed=closed,
+    )
+
+
+def _microdata_posting(soup, final_url):
+    scopes = soup.select('[itemscope][itemtype$="/JobPosting"]')
+    if len(scopes) != 1:
+        return None
+    scope = scopes[0]
+
+    def value(prop, *, within=scope):
+        field = within.select_one(f'[itemprop~="{prop}"]')
+        return (field.get("content") or field.get_text(" ", strip=True)).strip() if field else ""
+
+    title = value("title")
+    company = scope.select_one('[itemprop~="hiringOrganization"]')
+    description = scope.select_one('[itemprop~="description"]')
+    if not (title and company and description):
+        return None
+    location = scope.select_one('[itemprop~="jobLocation"]')
+    addresses = ("addressLocality", "addressRegion", "addressCountry")
+    label = (
+        ", ".join(filter(None, (value(prop, within=location) for prop in addresses)))
+        if location
+        else ""
+    )
+    remote = value("jobLocationType").upper() == "TELECOMMUTE"
+    expires = value("validThrough")
+    if expires:
+        try:
+            parsed = datetime.strptime(expires, "%a %b %d %H:%M:%S UTC %Y")
+            expires = parsed.replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            pass  # Other employers already publish an ISO 8601 date.
+    return _job(
+        "employer",
+        final_url,
+        title,
+        value("name", within=company) or value("hiringOrganization"),
+        "Remote" + (f"; {label}" if label else "") if remote else label,
+        description.get("content") or str(description),
+        value("datePosted"),
+        valid_through=expires,
+        is_remote=remote,
+    )
 
 
 def fetch_job(url: str) -> dict:
@@ -269,6 +349,8 @@ def fetch_job(url: str) -> dict:
             if isinstance(posting.get("identifier"), dict)
             else "",
         )
+    if details := _linkedin_posting(soup, url, final_url) or _microdata_posting(soup, final_url):
+        return details
     for tag in soup(["script", "style", "nav", "footer"]):
         tag.decompose()
     heading = soup.find("h1") or soup.find("title")
@@ -305,7 +387,7 @@ def _alert_job_link(url: str) -> bool:
         ):
             return False
         if host == "linkedin.com" or host.endswith(".linkedin.com"):
-            return bool(re.search(r"/jobs/view/\d+", parts.path))
+            return bool(_linkedin_posting_id(url))
         if host == "indeed.com" or host.endswith(".indeed.com"):
             return any(parse_qs(parts.query).get(key) for key in ("jk", "vjk"))
         if host.endswith(".greenhouse.io"):

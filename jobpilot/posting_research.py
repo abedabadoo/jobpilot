@@ -106,6 +106,8 @@ def research_posting(alert):
     details = (
         primary if primary and len(primary["description"]) >= 80 else collectors.fetch_job(url)
     )
+    if details.get("posting_closed"):
+        raise PostingClosed("The public posting is no longer accepting applications.")
     if details.get("needs_description_review") or len(str(details.get("description") or "")) < 80:
         raise ValueError("The public link did not provide a full job posting.")
     expiry = details.get("valid_through")
