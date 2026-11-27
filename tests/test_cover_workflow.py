@@ -266,7 +266,15 @@ def test_review_repairs_only_the_unsupported_sentence_without_resetting_fit(
     model = Mock(
         side_effect=[
             draft.model_dump(),
-            {"issues": [f"{unsupported} The checked resume does not establish this program."]},
+            {
+                "issues": [
+                    {
+                        "kind": "experience",
+                        "sentence": unsupported,
+                        "reason": "The checked resume does not establish this program.",
+                    }
+                ]
+            },
             {"changes": [{"paragraph": 2, "original": unsupported, "replacement": raw}]},
             {"issues": []},
         ]
@@ -296,6 +304,36 @@ def test_relevant_examples_must_be_visible_in_the_final_checked_resume():
         "Signal Orchard\n" + iam.replace("release pipelines", "release\npipelines") + "\n" + other,
         "Identity and Access Management engineer automating IAM permission checks.",
     ) == [iam]
+
+
+def test_review_preserves_a_demonstrated_skill_and_its_transfer_to_the_posting():
+    experience = "I automated IAM audit checks for the release team."
+    transfer = "This work mirrors your need to consult on FIDO2 and single sign-on."
+    future = "I would adapt those checks to your identity review process."
+    unrelated = "I personally ran production access for all business units."
+    review = letters.LetterReview(
+        issues=[
+            letters.LetterIssue(
+                kind="experience", sentence=transfer, reason="The resume does not list FIDO2."
+            ),
+            letters.LetterIssue(
+                kind="experience", sentence=future, reason="The resume does not show this project."
+            ),
+            letters.LetterIssue(
+                kind="experience",
+                sentence="The letter discusses ERP.",
+                reason="The resume has no ERP.",
+            ),
+            letters.LetterIssue(
+                kind="experience",
+                sentence=unrelated,
+                reason="The resume only lists release-team work.",
+            ),
+        ]
+    )
+    assert letters._review_feedback(
+        review, " ".join((experience, transfer, future, unrelated))
+    ) == (unrelated + " The resume only lists release-team work.")
 
 
 def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monkeypatch):
