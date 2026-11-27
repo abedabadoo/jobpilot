@@ -202,7 +202,7 @@ def test_short_letter_expands_in_place_with_measured_word_budget(context, tmp_pa
         before, _ = paragraph.rsplit(". ", 1)
         paragraphs[index] = before + "."
         additions.append({"paragraph": index + 1, "sentence": ideas[index]})
-    additions.append({"paragraph": 2, "sentence": ideas[-1]})
+    additions.append({"paragraph": 99, "sentence": ideas[-1]})
     shortened = full.model_copy(update={"paragraphs": paragraphs})
     monkeypatch.setattr(letters, "research", lambda *args: research)
     writer = Mock(side_effect=[shortened.model_dump(), {"additions": additions}, {"issues": []}])

@@ -41,6 +41,7 @@ _TRANSFER = re.compile(
     r"(?:would|could|mirrors|supports|translates|applies|relates|aligns)\b)",
     re.I,
 )
+_CLOSING = re.compile(r"^(?:thank you|I (?:would|will) (?:welcome|appreciate)|I look forward)", re.I)
 
 _SYSTEM = """Write the prose for a professional one-page application letter. The application will
 typeset the header, date, greeting, and signature. Return prose paragraphs only. Speak naturally,
@@ -238,10 +239,13 @@ def _expand_prose(context, draft, gap, sources, settings, data):
     # asking the model to rewrite several sound paragraphs from scratch.
     extra_lines = math.ceil((gap - context.template.leading) / context.template.leading)
     words = max(32, extra_lines * 13)
+    body_count = len(draft.paragraphs) - int(bool(_CLOSING.match(draft.paragraphs[-1].strip())))
+    destinations = {index: _words(text) for index, text in enumerate(draft.paragraphs[:body_count])}
     request = {**data, "existing_paragraphs": dict(enumerate(draft.paragraphs, 1)),
                "wanted_additional_words": words,
+               "allowed_paragraph_numbers": list(range(1, body_count + 1)),
                "edit": "Return 6–12 specific, complete sentences spanning different new ideas. "
-                       "Paragraph numbers start at one. Provide more than the target so the editor "
+                       "Use only the listed paragraph numbers. Provide more than the target so the editor "
                        "can select the strongest sentences. Do not use digits."}
     request.pop("previous_attempt", None)
     expanded = LetterExpansion.model_validate(call_json(
@@ -251,8 +255,6 @@ def _expand_prose(context, draft, gap, sources, settings, data):
     used = [_words(sentence) for paragraph in draft.paragraphs
             for sentence in re.split(r"(?<=[.!?])\s+", paragraph)]
     for item in expanded.additions[:12]:
-        if not 1 <= item.paragraph < len(draft.paragraphs):
-            continue
         for sentence in re.split(r"(?<=[.!?])\s+", clean(item.sentence)):
             terms = _words(sentence)
             if len(terms) < 5 or len(sentence) > 500 or not sentence.endswith((".", "!", "?")):
@@ -260,8 +262,11 @@ def _expand_prose(context, draft, gap, sources, settings, data):
             if any((overlap := len(terms & prior)) >= 5 and overlap >= .67 * min(len(prior), len(terms))
                    for prior in used):
                 continue
+            index = item.paragraph - 1
+            if index not in destinations:
+                index = max(destinations, key=lambda candidate: len(destinations[candidate] & terms))
             used.append(terms)
-            additions.append((item.paragraph - 1, sentence))
+            additions.append((index, sentence))
     for count in range(len(additions), 0, -1):
         paragraphs = draft.paragraphs.copy()
         for index, sentence in additions[:count]:
