@@ -186,16 +186,28 @@ def test_standalone_postings_with_identical_titles_are_distinct(context):
 def test_short_letter_expands_in_place_with_measured_word_budget(context, tmp_path, monkeypatch):
     full, research = passing_prose(context, tmp_path)
     paragraphs = full.paragraphs.copy()
-    additions = []
+    ideas = [
+        "Before an approval, I would identify which service owns the dependency and record where to find its escalation contact.",
+        "I would capture examples of unexpected outcomes in the deployment checklist and bring them to the design discussion.",
+        "I would also document which changes need a rollback drill and who should attest to recovery before broader adoption.",
+        "For unusual alerts, I would give responders a clear route to the responsible team and preserve the diagnostic evidence.",
+        "When several teams share a platform, an ownership matrix can clarify who accepts risk and who signs off on remediation.",
+    ]
+    additions = [{"paragraph": 1, "sentence": paragraphs[0].split(". ")[0] + "."}]
     for index, paragraph in enumerate(paragraphs[:-1]):
-        before, last = paragraph.rsplit(". ", 1)
+        before, _ = paragraph.rsplit(". ", 1)
         paragraphs[index] = before + "."
-        additions.append({"paragraph": index + 1, "sentence": last})
+        additions.append({"paragraph": index + 1, "sentence": ideas[index]})
+    additions.append({"paragraph": 2, "sentence": ideas[-1]})
     shortened = full.model_copy(update={"paragraphs": paragraphs})
     monkeypatch.setattr(letters, "research", lambda *args: research)
     writer = Mock(side_effect=[shortened.model_dump(), {"additions": additions}, {"issues": []}])
     monkeypatch.setattr(letters, "call_json", writer)
-    assert context.generate(0)["ready"]
+    result = context.generate(0)
+    assert result["ready"]
+    assert result["draft"]["text"].count(additions[0]["sentence"]) == paragraphs[0].count(
+        additions[0]["sentence"]
+    )
     assert [call.kwargs["output_model"] for call in writer.call_args_list] == [
         letters.LetterProse,
         letters.LetterExpansion,
