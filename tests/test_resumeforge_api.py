@@ -156,16 +156,22 @@ def test_same_title_sync_keeps_resumes_and_cover_letters_posting_specific(integr
             "application": {},
         }
     )
+
+    def checked(job, run_id, pdf=b"%PDF-1.4\noriginal resume\n"):
+        workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+        folder = run_result(workspace, run_id, pdf=pdf)
+        report_file = folder / "result.json"
+        report = json.loads(report_file.read_text(encoding="utf-8"))
+        report["profile"] = {"name": "Fictional Candidate", "contact": "candidate@example.invalid"}
+        report_file.write_text(json.dumps(report), encoding="utf-8")
+
     for index, job in enumerate((first, second), start=1):
         base = f"/api/jobs/{job['id']}/resumeforge"
         assert client.post(base + "/open", json={}, headers=headers).status_code == 200
-        workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
-        run_result(workspace, str(index) * 32)
-    first_destination = service.resumeforge_bridge.resume_destination(service.DATA, first)
-    first_destination.parent.mkdir(parents=True, exist_ok=True)
-    (first_destination.parent / "Alnajjar_CoverLetter.pdf").write_bytes(
-        b"%PDF-1.4 first posting cover"
-    )
+        checked(job, str(index) * 32)
+    first_context = service.resumeforge_bridge.cover_workspace(service.DATA, first)
+    letter_pdf = b"%PDF-1.4\nfirst posting cover\n"
+    first_context._commit(0, first_context._draft_record("Saved draft", {}), letter_pdf)
 
     for job in (first, second):
         response = client.post(f"/api/jobs/{job['id']}/resumeforge/use", json={}, headers=headers)
@@ -176,6 +182,15 @@ def test_same_title_sync_keeps_resumes_and_cover_letters_posting_specific(integr
     assert first_saved["resumeforge_pdf"] != second_saved["resumeforge_pdf"]
     assert "resumeforge_cover_pdf" in first_saved
     assert "resumeforge_cover_pdf" not in second_saved
+
+    checked(first, "3" * 32, b"%PDF-1.4\nregenerated resume\n")
+    first_route = f"/api/jobs/{first['id']}/resumeforge/use"
+    assert client.post(first_route, json={}, headers=headers).status_code == 200
+    saved = service.store.get_job(first["id"])
+    assert saved["documents"] == {"resumeforge_pdf": str(first_context.resume)}
+    assert saved["application"]["documents"] == saved["documents"]
+    assert first_context.letter.read_bytes() == letter_pdf
+    assert not service.resumeforge_bridge.cover_workspace(service.DATA, first).state()["current"]
 
 
 def test_document_regeneration_uses_resumeforge_only(integration, monkeypatch):
