@@ -212,7 +212,28 @@ def _candidates_from_work(profile: Profile, selected: Iterable[Candidate] | None
             additions.append(name)
             known.add(identity)
 
-    return additions
+    # A name inferred from work must stand on its own when it is also part
+    # of a longer evidenced product name. Preserve explicitly listed skills.
+    # For example, "using GitHub Actions" alone proves neither the separate
+    # "GitHub" label nor the fragment "Actions".
+    inventory = _source_skills(profile) + additions
+    work = "\n".join(confirmed + shown)
+    supported = []
+    for name in additions:
+        longer = [
+            priorities.literal_pattern(label) for label in inventory
+            if len(label.split()) > len(name.split())
+            and priorities.literal_pattern(name).search(label)
+        ]
+        posting_context, work_context = job_description, work
+        for phrase in longer:
+            posting_context = phrase.sub(" ", posting_context)
+            work_context = phrase.sub(" ", work_context)
+        if not longer or (
+            keyword_matches(posting_context, name) and _positive_use(work_context, name)
+        ):
+            supported.append(name)
+    return supported
 
 
 def _direct_job_points(skill: str, rows) -> float:
