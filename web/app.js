@@ -914,7 +914,10 @@
     const request = new AbortController();
     const timeout = setTimeout(() => request.abort(), 10000);
     try {
-      const response = await fetch('/api/state', { cache: 'no-store', signal: request.signal });
+      const response = await fetch('/api/state?include_keywords=false', {
+        cache: 'no-store',
+        signal: request.signal,
+      });
       if (!response.ok) throw new Error('The local service is unavailable.');
       const result = await response.json();
       if (!result || !Array.isArray(result.jobs))
@@ -1349,28 +1352,47 @@
       }
     }
     const keywordSection = el('section', 'detail-section');
-    keywordSection.append(el('h3', '', 'Keywords from the job posting'));
-    const keywords = job.keywords || {},
-      terms =
+    const keywordResults = el('div');
+    keywordSection.append(el('h3', '', 'Keywords from the job posting'), keywordResults);
+    content.append(keywordSection);
+    function renderKeywords(keywords) {
+      const terms =
         Array.isArray(keywords.terms) && keywords.terms.length
           ? keywords.terms
           : [...(keywords.tools || []), ...(keywords.skills || [])];
-    const unique = [...new Set(terms.filter((term) => typeof term === 'string' && term.trim()))],
-      chips = el('div', 'keyword-chips');
-    unique.forEach((term) => {
-      const matched = (keywords.matched || []).some(
-        (value) => String(value).toLowerCase() === term.toLowerCase(),
+      const unique = [...new Set(terms.filter((term) => typeof term === 'string' && term.trim()))],
+        chips = el('div', 'keyword-chips');
+      unique.forEach((term) => {
+        const matched = (keywords.matched || []).some(
+          (value) => String(value).toLowerCase() === term.toLowerCase(),
+        );
+        const chip = el('span', `keyword-chip ${matched ? 'matched' : ''}`, term);
+        if (matched) chip.title = 'Also present in your saved profile';
+        chips.append(chip);
+      });
+      keywordResults.replaceChildren(
+        unique.length
+          ? chips
+          : el('p', 'modal-note', 'Keywords will appear after the job description is assessed.'),
       );
-      const chip = el('span', `keyword-chip ${matched ? 'matched' : ''}`, term);
-      if (matched) chip.title = 'Also present in your saved profile';
-      chips.append(chip);
-    });
-    keywordSection.append(
-      unique.length
-        ? chips
-        : el('p', 'modal-note', 'Keywords will appear after the job description is assessed.'),
-    );
-    content.append(keywordSection);
+    }
+    if (job.keywords) {
+      renderKeywords(job.keywords);
+    } else {
+      keywordResults.append(el('p', 'modal-note', 'Reading posting keywords…'));
+      fetch(`/api/jobs/${encodeURIComponent(job.id)}/keywords`, { cache: 'no-store' })
+        .then((response) => {
+          if (!response.ok) throw new Error('Keywords unavailable');
+          return response.json();
+        })
+        .then((keywords) => {
+          if (keywordSection.isConnected) renderKeywords(keywords);
+        })
+        .catch(() => {
+          if (keywordSection.isConnected)
+            keywordResults.textContent = 'Could not read posting keywords.';
+        });
+    }
     const docs = el('section', 'detail-section document-section');
     docs.append(
       el('h3', '', 'ResumeForge documents'),

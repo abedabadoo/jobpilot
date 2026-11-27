@@ -89,6 +89,7 @@ def dashboard():
         "held": [],
         "hold_state": False,
         "problem_reads": 0,
+        "keyword_reads": 0,
         "state_status": 200,
         "resolve_status": 200,
         "open_status": 200,
@@ -109,7 +110,20 @@ def dashboard():
             result = {"token": "fixture-token"}
         elif path == "/api/state":
             status = control["state_status"]
-            result = state if status == 200 else {"detail": "Fixture service error."}
+            result = (
+                {
+                    **state,
+                    "jobs": [
+                        {k: v for k, v in row.items() if k != "keywords"} if row else row
+                        for row in state["jobs"]
+                    ],
+                }
+                if status == 200
+                else {"detail": "Fixture service error."}
+            )
+        elif path == "/api/jobs/1/keywords":
+            control["keyword_reads"] += 1
+            result = job["keywords"]
         elif path == "/api/problems":
             control["problem_reads"] += 1
             # Deliberately stale, as a poll started before resolution can be.
@@ -162,7 +176,7 @@ def dashboard():
             control["hold_state"] = False
             held, control["held"] = control["held"], []
             for route in held:
-                route.fulfill(content_type="application/json", body=json.dumps(state))
+                route_api(route)
 
         control.update(page=page, state=state, hold_poll=hold_poll, release_poll=release_poll)
         try:
@@ -206,6 +220,14 @@ def test_dashboard_distinguishes_render_errors_from_service_errors(dashboard):
     dashboard["state"]["jobs"] = jobs
     expect(page.locator("#connectionLabel")).to_have_text("Local service connected", timeout=5000)
     expect(page.locator("#serviceBanner")).to_be_hidden()
+
+
+def test_dashboard_only_reads_keywords_when_a_role_is_opened(dashboard):
+    page = dashboard["page"]
+    assert dashboard["keyword_reads"] == 0
+    page.get_by_role("button", name="Cloud Security Engineer").click()
+    expect(page.locator("#modal .keyword-chip", has_text="AWS")).to_be_visible()
+    assert dashboard["keyword_reads"] == 1
 
 
 def test_failed_resolution_keeps_the_problem_available_to_retry(dashboard):

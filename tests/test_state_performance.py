@@ -40,6 +40,19 @@ def test_state_reuses_keywords_across_polls_and_duplicate_postings(state_api):
     assert len(calls) == 1
 
 
+def test_dashboard_state_loads_without_analyzing_every_posting(state_api):
+    service, client, calls = state_api
+    first = add(service, "one")
+    add(service, "two")
+    response = client.get("/api/state?include_keywords=false")
+    assert response.status_code == 200
+    assert len(response.json()["jobs"]) == 2
+    assert all("keywords" not in job for job in response.json()["jobs"])
+    assert calls == []
+    assert client.get(f"/api/jobs/{first['id']}/keywords").json()["terms"]
+    assert len(calls) == 1
+
+
 def test_state_invalidates_keywords_when_posting_or_profile_changes(state_api):
     service, client, calls = state_api
     job = add(service, "one")

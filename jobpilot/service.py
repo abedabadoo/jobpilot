@@ -1104,12 +1104,16 @@ def session():
 
 
 @app.get("/api/state")
-def state():
+def state(include_keywords: bool = True):
     profile = store.get("profile")
-    profile_json = json.dumps(profile, sort_keys=True, ensure_ascii=False)
+    profile_json = (
+        json.dumps(profile, sort_keys=True, ensure_ascii=False) if include_keywords else ""
+    )
     jobs = []
     for job in store.jobs():
-        current = {**job, "keywords": job_keywords(job, profile_json)}
+        current = dict(job)
+        if include_keywords:
+            current["keywords"] = job_keywords(job, profile_json)
         forge = job.get("resumeforge")
         if isinstance(forge, dict):
             try:
