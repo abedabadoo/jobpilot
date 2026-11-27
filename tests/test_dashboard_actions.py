@@ -284,3 +284,57 @@ def test_resume_download_returns_file_bytes_without_opening_another_tab(dashboar
     assert Path(download.path()).read_bytes() == PDF_BYTES
     assert dashboard["downloads"] == [RESUME_PATH]
     assert len(page.context.pages) == 1
+
+
+def test_cover_letter_only_requests_generation_after_click(dashboard):
+    page = dashboard["page"]
+    route = "**/api/jobs/1/cover-letter*"
+    requests = []
+    draft = {"text": "Dear Hiring Team,\n\nExisting wording.", "research": {"sources": []}}
+    state = {
+        "revision": 0,
+        "can_generate": True,
+        "exists": False,
+        "pdf": None,
+        "ready": False,
+        "message": "Generate a cover letter for this checked resume.",
+    }
+
+    def cover(request):
+        if request.request.method == "POST":
+            payload = request.request.post_data_json
+            requests.append(payload)
+            revision = state["revision"] + 1
+            if payload["action"] == "save":
+                draft["text"] = payload["text"]
+            state.update(
+                exists=True,
+                ready=True,
+                revision=revision,
+                draft=draft,
+                message="Cover letter ready.",
+            )
+        request.fulfill(json=state)
+
+    page.route(
+        "**/api/jobs/1/resumeforge/status",
+        lambda r: r.fulfill(json={"status": "ready", "attached": True}),
+    )
+    page.route(route, cover)
+    page.get_by_role("button", name="Review", exact=True).click()
+    generate = page.get_by_role("button", name="Generate Cover Letter", exact=True)
+    expect(generate).to_be_enabled()
+    assert not requests
+    generate.click()
+    editor = page.get_by_role("dialog", name="Cover letter")
+    expect(editor.get_by_text("Cover letter ready.")).to_be_visible()
+    expect(editor.get_by_label("Cover letter wording")).to_have_value(draft["text"])
+    assert [event["action"] for event in requests] == ["generate"]
+    editor.get_by_role("button", name="Fresh AI draft").click()
+    assert len(requests) == 1  # The confirmation is dismissed by default.
+    revised = "Dear Hiring Team,\n\nRevised wording."
+    editor.get_by_label("Cover letter wording").fill(revised)
+    with page.expect_response(lambda response: response.request.method == "POST"):
+        editor.get_by_role("button", name="Save edits and update PDF").click()
+    expect(editor.get_by_label("Cover letter wording")).to_have_value(revised)
+    assert [event["action"] for event in requests] == ["generate", "save"]

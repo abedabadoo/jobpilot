@@ -338,6 +338,192 @@
     });
     return link;
   }
+  async function coverLetterState(route) {
+    const response = await fetch(route, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not read the cover letter status.');
+    return response.json();
+  }
+
+  async function openCoverLetter(job, updateStatus) {
+    const route = `/api/jobs/${encodeURIComponent(job.id)}/cover-letter`;
+    let current = await coverLetterState(route);
+    if (!current.can_generate && !current.exists) throw new Error(current.message);
+    const dialog = el('dialog', 'cover-letter-dialog'),
+      container = el('div', 'cover-letter-container'),
+      heading = el('h2', '', 'Cover letter'),
+      status = el('p', 'modal-note'),
+      editor = el('textarea', 'cover-letter-editor'),
+      companyWebsite = el('input'),
+      instructions = el('input'),
+      controls = el('div', 'detail-links'),
+      save = button('Save edits and update PDF', 'secondary', 'file'),
+      generate = button('Fresh AI draft', 'secondary', 'file'),
+      openPDF = button('Open PDF', 'secondary', 'external'),
+      close = button('Close', 'quiet'),
+      research = el('details'),
+      preview = el('details', 'cover-letter-preview'),
+      page = el('img');
+    let working = false;
+    dialog.setAttribute('aria-label', 'Cover letter');
+    status.setAttribute('role', 'status');
+    editor.setAttribute('aria-label', 'Cover letter wording');
+    companyWebsite.type = 'url';
+    companyWebsite.maxLength = 1800;
+    instructions.maxLength = 3000;
+    page.alt = 'Rendered cover letter page';
+    research.append(el('summary', '', 'Research sources'));
+    preview.append(el('summary', '', 'PDF preview'), page);
+    const field = (label, input) => {
+      const wrapper = el('label', 'cover-letter-field', label);
+      wrapper.append(input);
+      return wrapper;
+    };
+    controls.append(save, generate, openPDF, close);
+    container.append(
+      heading,
+      el('p', 'modal-note', `${job.title} at ${job.company}`),
+      status,
+      editor,
+      field('Official website or article (optional)', companyWebsite),
+      field('AI rewrite instructions (optional)', instructions),
+      controls,
+      research,
+      preview,
+    );
+    dialog.append(container);
+    document.body.append(dialog);
+    const dirty = () => editor.value !== (current.draft?.text || '');
+    function enableControls() {
+      dialog.setAttribute('aria-busy', String(working));
+      close.disabled = working;
+      editor.readOnly = working;
+      save.disabled = working || !current.draft;
+      generate.disabled = working || !current.can_generate;
+      openPDF.disabled = working || !current.pdf;
+    }
+    function show(result) {
+      current = result;
+      status.textContent = result.message;
+      editor.value = result.draft?.text || '';
+      generate.textContent = result.exists ? 'Fresh AI draft' : 'Generate Cover Letter';
+      const info = result.draft?.research || {};
+      if (!companyWebsite.value.trim() && info.company_url) companyWebsite.value = info.company_url;
+      research.replaceChildren(
+        el('summary', '', 'Research sources'),
+        el('p', 'modal-note', info.message || 'Research appears after generation.'),
+      );
+      const sources = [...(info.sources || [])];
+      if (info.hiring_manager)
+        sources.push({
+          title: `Hiring contact · ${info.hiring_manager.name}`,
+          url: info.hiring_manager.url,
+        });
+      sources.forEach((source) => {
+        const link = el('a', '', source.title);
+        const url = safeURL(source.url);
+        if (!url) return;
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        const row = el('p');
+        row.append(link);
+        if (source.published) row.append(document.createTextNode(` · ${source.published}`));
+        if (source.url === result.draft?.source_used?.url)
+          row.append(document.createTextNode(' · used in letter'));
+        research.append(row);
+        if (source.excerpt) research.append(el('p', 'modal-note', source.excerpt));
+      });
+      preview.hidden = !result.pdf;
+      preview.firstElementChild.textContent = result.ready ? 'PDF preview' : 'Previous PDF';
+      if (result.pdf) page.src = `${route}/preview?revision=${result.revision}`;
+      enableControls();
+      updateStatus?.(result);
+    }
+    async function monitor(task) {
+      while (task?.state === 'running') {
+        status.textContent = task.message;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const result = await coverLetterState(route);
+        task = result.task;
+        if (task?.state === 'ready') return result;
+      }
+      throw new Error(task?.message || 'The cover letter task was interrupted. Try again.');
+    }
+    async function submit(action) {
+      if (working) return;
+      const replacing = current.exists || dirty();
+      if (
+        action === 'generate' &&
+        replacing &&
+        !window.confirm(
+          'Replace the current wording, including unsaved changes, when a new draft passes its checks?',
+        )
+      )
+        return;
+      working = true;
+      status.textContent =
+        action === 'generate'
+          ? 'Researching and drafting with ResumeForge. This can take several minutes.'
+          : 'Saving your wording and checking the PDF…';
+      enableControls();
+      try {
+        let result = await api(route, {
+          action,
+          revision: current.revision,
+          confirmed: replacing,
+          text: editor.value,
+          instructions: instructions.value,
+          company_url: companyWebsite.value.trim(),
+        });
+        if (result.task?.state === 'running') result = await monitor(result.task);
+        show(result);
+        if (result.ready) preview.open = true;
+      } catch (error) {
+        status.textContent = friendlyMessage(
+          error.message,
+          'The cover letter operation did not complete.',
+        );
+      } finally {
+        working = false;
+        enableControls();
+      }
+    }
+    function closeEditor() {
+      if (!working && (!dirty() || window.confirm('Discard unsaved wording changes?')))
+        dialog.close();
+    }
+    close.addEventListener('click', closeEditor);
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeEditor();
+    });
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    save.addEventListener('click', () => submit('save'));
+    generate.addEventListener('click', () => submit('generate'));
+    openPDF.addEventListener('click', async () => {
+      try {
+        await api('/api/artifact/open', { path: current.pdf });
+      } catch (error) {
+        status.textContent = friendlyMessage(error.message, 'Could not open the cover letter PDF.');
+      }
+    });
+    show(current);
+    dialog.showModal();
+    if (current.task?.state === 'running') {
+      working = true;
+      enableControls();
+      monitor(current.task)
+        .then(show)
+        .catch((error) => {
+          status.textContent = error.message;
+        })
+        .finally(() => {
+          working = false;
+          enableControls();
+        });
+    } else if (!current.exists && current.can_generate) submit('generate');
+  }
+
   function documentEntries(job) {
     const names = {
       resumeforge_pdf: 'Resume PDF',
@@ -1396,11 +1582,7 @@
     const docs = el('section', 'detail-section document-section');
     docs.append(
       el('h3', '', 'ResumeForge documents'),
-      el(
-        'p',
-        'modal-note',
-        'ResumeForge builds resumes. Cover letters are created only when you choose that option in its editor.',
-      ),
+      el('p', 'modal-note', 'Generate a cover letter after the resume passes its checks.'),
     );
     const entries = documentEntries(job),
       downloads = el('div', 'artifact-links');
@@ -1434,14 +1616,33 @@
       el(
         'p',
         'modal-note',
-        'Roles at 80% fit build automatically. Use Sync after editing the resume or creating an optional letter.',
+        'Roles at 80% fit build automatically. Use Sync after editing a checked resume.',
       ),
     );
     const forgeControls = el('div', 'detail-links'),
       forgeProfile = button('ResumeForge profile', 'secondary', 'file'),
       forgeOpen = button('Open in ResumeForge', 'secondary', 'external'),
       forgeUse = button('Sync ResumeForge PDFs', 'secondary', 'file'),
-      forgeStatus = el('p', 'modal-note', 'Checking ResumeForge…');
+      forgeStatus = el('p', 'modal-note', 'Checking ResumeForge…'),
+      coverButton = button('Generate Cover Letter', 'secondary', 'file'),
+      coverStatus = el('p', 'modal-note', 'A checked resume is required for a cover letter.');
+    coverButton.disabled = true;
+    function updateCoverStatus(result) {
+      if (!forge.isConnected) return;
+      coverButton.textContent = result.exists ? 'Edit Cover Letter' : 'Generate Cover Letter';
+      coverButton.disabled = !result.exists && !result.can_generate;
+      coverStatus.textContent = result.message;
+    }
+    coverButton.addEventListener('click', async () => {
+      coverButton.disabled = true;
+      try {
+        await openCoverLetter(job, updateCoverStatus);
+      } catch (error) {
+        dialogError(error);
+      } finally {
+        refreshForge();
+      }
+    });
     let forgeRefreshTimer;
     forgeUse.disabled = true;
     forgeProfile.addEventListener('click', async () => {
@@ -1470,8 +1671,8 @@
       );
       if (result && selectedJob === job.id && $('modal').open) showJob(job.id);
     });
-    forgeControls.append(forgeProfile, forgeOpen, forgeUse);
-    forge.append(forgeControls, forgeStatus);
+    forgeControls.append(forgeProfile, forgeOpen, forgeUse, coverButton);
+    forge.append(forgeControls, forgeStatus, coverStatus);
     docs.append(forge);
     content.append(docs);
     async function refreshForge() {
@@ -1497,12 +1698,20 @@
           failed: 'The latest ResumeForge build did not finish. Try again there.',
           invalid: 'JobPilot could not verify the latest ResumeForge PDF.',
           ready: result.attached
-            ? 'Resume ready. Sync again after creating an optional cover letter.'
+            ? 'Checked resume ready.'
             : 'Checked PDF ready. Sync it to add it to this role.',
         };
         forgeStatus.textContent = messages[result.status] || 'ResumeForge status is unavailable.';
         forgeOpen.disabled = result.status === 'setup_required';
         forgeUse.disabled = result.status !== 'ready';
+        if (result.status === 'ready') {
+          const cover = await coverLetterState(
+            `/api/jobs/${encodeURIComponent(job.id)}/cover-letter?summary=true`,
+          );
+          updateCoverStatus(cover);
+        } else {
+          coverButton.disabled = true;
+        }
       } catch (_) {
         if (forge.isConnected) {
           forgeStatus.textContent =

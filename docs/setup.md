@@ -51,11 +51,22 @@ The PyInstaller output contains the desktop launcher; installing also supplies t
 
 Choose **ResumeForge profile** in JobPilot and save your source profile first. ResumeForge is bundled into the same application; a separate installation is unnecessary. A role with a full description starts building automatically when its fit reaches 80%. Select **Open in ResumeForge** to inspect or edit its dedicated workspace. The first open copies your saved ResumeForge profile and model settings into that workspace.
 
-ResumeForge analyzes the complete posting, ranks its requirements, writes the tailored content, and performs the measured PDF checks. When the status says **Checked PDF ready**, the ResumeForge PDF appears with Open and Download controls. ResumeForge is the only document generator; JobPilot does not keep a second resume or Word export. Cover letters are never created automatically. After a checked resume exists, you may create and edit an optional letter in ResumeForge and then use **Sync ResumeForge PDFs**.
+ResumeForge analyzes the complete posting, ranks its requirements, writes the tailored content, and performs the measured PDF checks. When the status says **Checked PDF ready**, the ResumeForge PDF appears with Open and Download controls. ResumeForge is the only document generator; JobPilot does not keep a second resume or Word export.
 
 Reopening the same posting keeps edits in its role workspace. If the posting changes, JobPilot opens a fresh workspace. Your main ResumeForge workspace remains intact. The editor starts on demand and closes independently, so Qt and the writing model do not remain resident while JobPilot is only monitoring jobs.
 
 Closing the desktop window hides it to the tray. **Quit dashboard** leaves the worker running. **Stop worker** stops background work without deleting the queue. Windows sign-in startup is available after installation, through Preferences. The installed recovery task checks every five minutes and at sign-in, and starts services only when the saved startup setting is enabled. Automatic submission and remote access remain disabled in assistant mode, even when older saved preferences enabled them.
+
+### Cover letters
+
+Open **Review** for a role with a checked resume and choose **Generate Cover Letter**. ResumeForge offers the same action. A local ResumeForge model is required. The writer uses the checked PDF for that posting, and each initial generation or **Fresh AI draft** attempts to verify public company research. Add an official company website or article in the editor if automatic discovery comes up empty. When a recruiter or hiring manager cannot be verified from the posting, the greeting is **Dear Hiring Team,**.
+
+The preview shows the saved one-page PDF. **Save edits and update PDF** keeps your wording and checks the same fixed page geometry. If the text needs further edits, the previous PDF stays available and the draft is marked as needing an update. **Fresh AI draft** requires confirmation before it can replace an existing letter. Use **Research sources** to review the URLs and dates. If the resume changes, the editor identifies the older letter and offers a fresh draft.
+
+Both files live under `~/Downloads/JobPilot RF Docs/<Company> - <Position>/<posting-id>/` as `Alnajjar_Resume.pdf` and `Alnajjar_CoverLetter.pdf`. ResumeForge saves editable wording and source metadata in the posting workspace.
+
+The fixed-header business-letter design and evidence-led paragraphs follow [MIT’s career guidance](https://capd.mit.edu/resources/how-to-write-an-effective-cover-letter/) and [Harvard’s cover letter guidance](https://careerservices.fas.harvard.edu/resources/hes-create-impactful-resumes-and-cover-letters/).
+
 
 ## Email alerts
 

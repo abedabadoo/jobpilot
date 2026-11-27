@@ -186,6 +186,9 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
     if draft_path.exists():
         draft = json.loads(draft_path.read_text(encoding="utf-8"))
         changed = False
+        if not draft.get("job_posting_url"):
+            draft["job_posting_url"] = _posting_url(job)
+            changed = True
         if not draft.get("job_company") or not draft.get("job_title"):
             draft["job_company"] = posting_company(job)
             draft["job_title"] = str(job.get("title") or "")
@@ -234,6 +237,7 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
         "keywords": "",  # Preserve ResumeForge’s own posting analysis.
         "job_company": posting_company(job),
         "job_title": str(job.get("title") or ""),
+        "job_posting_url": _posting_url(job),
     }
     _atomic_json(draft_path, draft)
     return workspace
@@ -258,6 +262,12 @@ def posting_company(job: dict) -> str:
     return str(job.get("company") or "Employer").strip()
 
 
+def _posting_url(job: dict) -> str:
+    from .collectors import _alert_destination
+
+    return _alert_destination(str(job.get("apply_url") or job.get("url") or ""))
+
+
 def downloads_folder(job: dict) -> Path:
     from resumeforge.cover_letter import role_folder
 
@@ -266,15 +276,35 @@ def downloads_folder(job: dict) -> Path:
 
 def resume_destination(data_dir: Path, job: dict) -> Path:
     """Return a friendly filename in a posting-specific export directory."""
-    role = downloads_folder(job)
-    folder = role / workspace_path(data_dir, job).name
-    if (
-        folder.is_symlink()
-        or folder.is_junction()
-        or not folder.resolve().is_relative_to(role.resolve())
-    ):
-        raise ValueError("The ResumeForge posting document folder is redirected.")
-    return folder / "Alnajjar_Resume.pdf"
+    from resumeforge.cover_letter import posting_subfolder
+    from resumeforge.cover_workflow import RESUME_NAME
+
+    return (
+        posting_subfolder(downloads_folder(job), workspace_path(data_dir, job).name) / RESUME_NAME
+    )
+
+
+def cover_workspace(data_dir: Path, job: dict):
+    from resumeforge.cover_workflow import LetterWorkspace
+    from resumeforge.desktop_support import load_draft
+    from resumeforge.models import ModelSettings
+
+    workspace = workspace_path(data_dir, job)
+    validate_workspace(data_dir, workspace)
+    checked = checked_run(workspace)
+    if checked["status"] != "ready":
+        raise ValueError("Build and check a ResumeForge resume for this role first.")
+    saved = load_draft(workspace) or {}
+    return LetterWorkspace(
+        workspace,
+        checked["pdf"].parent,
+        resume_destination(data_dir, job),
+        posting_company(job),
+        str(job.get("title") or ""),
+        _job_description(job),
+        ModelSettings.model_validate(saved.get("settings") or {}),
+        _posting_url(job),
+    )
 
 
 def build_resume(data_dir: Path, job: dict) -> dict:

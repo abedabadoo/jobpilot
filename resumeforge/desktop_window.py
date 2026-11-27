@@ -9,16 +9,16 @@ import sys
 import os
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QFileDialog, QMessageBox, QPlainTextEdit,
-    QDialog, QDialogButtonBox,
     QProgressBar, QPushButton, QSplitter, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from .desktop_preview import PagePreview, plain_label
 from .desktop_support import export_checked, load_draft, save_draft
-from .cover_letter import draft_text, export_pdf as export_cover_pdf, workspace_role_folder
+from .cover_letter import workspace_role_folder
+from .cover_workflow import LetterWorkspace, RESUME_NAME
 from .engine import run
 from .ideas import IdeaRequest, brainstorm
 from .importing import MAX_BYTES, import_document
@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):
         self.data_dir = Path(data_dir)
         self.job_company = ""
         self.job_title = ""
+        self.job_posting_url = ""
         self.profile = Profile.model_validate_json((Path(__file__).with_name("data") /
                                                     "abu.profile.json").read_text(encoding="utf-8"))
         self.settings = default_settings()
@@ -231,9 +232,18 @@ class MainWindow(QMainWindow):
         self.export_button = button("Save checked PDF…", "exportButton", self.export_pdf)
         self.export_button.setEnabled(False)
         footer.addWidget(self.export_button, 1, 2)
-        self.cover_button = button("Create cover letter…", "coverButton", self.create_cover_letter)
+        self.cover_button = button("Generate Cover Letter", "coverButton", self.create_cover_letter)
         self.cover_button.setEnabled(False)
         footer.addWidget(self.cover_button, 2, 2)
+        self.cover_status = plain_label("Build a checked resume before creating a cover letter.")
+        footer.addWidget(self.cover_status, 3, 0, 1, 3)
+        if not re.fullmatch(r"job-[1-9][0-9]*-[0-9a-f]{12}", self.data_dir.name):
+            details = button("Application details…", "applicationDetails", self.edit_application_details)
+            footer.addWidget(details, 2, 1)
+        self.cover_timer = QTimer(self)
+        self.cover_timer.setInterval(5000)
+        self.cover_timer.timeout.connect(self._refresh_cover_status)
+        self.cover_timer.start()
         content.addLayout(footer)
         outer.addLayout(content, 1)
         self._fit_workspace()
@@ -532,7 +542,8 @@ class MainWindow(QMainWindow):
                 "settings": self._current_settings().model_dump(), "job_description": self.job.toPlainText(),
                 "edit_request": self.brief.toPlainText(), "keywords": self.keywords.toPlainText(),
                 "ideas": self.ideas, "idea_role": self.idea_role.currentData(), "idea_topic": self.idea_topic.text(),
-                "job_company": self.job_company, "job_title": self.job_title}
+                "job_company": self.job_company, "job_title": self.job_title,
+                "job_posting_url": self.job_posting_url}
 
     def _restore(self):
         try:
@@ -551,6 +562,7 @@ class MainWindow(QMainWindow):
             self.profile, self.settings, self.ideas = profile, settings, restored
             self.job_company = str(draft.get("job_company") or "")
             self.job_title = str(draft.get("job_title") or "")
+            self.job_posting_url = str(draft.get("job_posting_url") or "")
             self._show_profile()
             self.job.setPlainText(draft.get("job_description", ""))
             self.brief.setPlainText(draft.get("edit_request", ""))
@@ -688,6 +700,7 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self.export_button.setEnabled(bool(self._can_export()))
         self.cover_button.setEnabled(bool(self._can_export()))
+        self._refresh_cover_status()
         labels = {"ready": "Checks passed. Review the PDF before submitting.",
                   "needs_content": "Automatic page-fill refinement could not reach the fixed one-page target. See the checks.",
                   "needs_review": "Content needs review. See Changes and checks."}
@@ -726,52 +739,85 @@ class MainWindow(QMainWindow):
                       "After: " + (change.get("after") or "(omitted)")]
         return "\n".join(lines)
 
+    def edit_application_details(self):
+        from .desktop_cover import role_details
+
+        if self.worker is not None:
+            return False
+        details = role_details(self, self.job_company, self.job_title, self.job_posting_url)
+        if details is None:
+            return False
+        self.job_company, self.job_title, self.job_posting_url = details
+        self._dirty = True
+        self._refresh_cover_status()
+        return True
+
+    def _resume_destination(self):
+        return workspace_role_folder(
+            self.job_company, self.job_title, self.data_dir, self.job.toPlainText()
+        ) / RESUME_NAME
+
+    def _letter_context(self):
+        saved = load_draft(self.data_dir) or {}
+        posting = self.job_posting_url or saved.get("job_posting_url", "")
+        return LetterWorkspace(self.data_dir, self.run_dir, self._resume_destination(),
+                               self.job_company, self.job_title, self.job.toPlainText(),
+                               self._current_settings(), posting)
+
+    def _refresh_cover_status(self):
+        if not self._can_export():
+            self.cover_status.setText("Build a checked resume before creating a cover letter.")
+            return
+        if not self.job_company or not self.job_title:
+            self.cover_status.setText("Name the application to save documents in its posting folder.")
+            return
+        try:
+            state = self._letter_context().state()
+        except (ValueError, KeyError, OSError) as exc:
+            self.cover_status.setText(str(exc))
+            return
+        self.cover_button.setText("Edit Cover Letter" if state["exists"] else "Generate Cover Letter")
+        self.cover_status.setText(state["message"])
+
     def export_pdf(self):
         if not self._can_export() or self.worker is not None:
             return
-        if self.job_company and self.job_title:
-            destination = workspace_role_folder(
-                self.job_company, self.job_title, self.data_dir
-            ) / "Alnajjar_Resume.pdf"
-        else:
-            path, _ = QFileDialog.getSaveFileName(self, "Save checked resume", "Alnajjar_Resume.pdf", "PDF (*.pdf)")
-            if not path:
-                return
-            destination = Path(path)
-        if not destination.suffix:
-            destination = destination.with_suffix(".pdf")
+        if (not self.job_company or not self.job_title) and not self.edit_application_details():
+            return
         try:
+            destination = self._resume_destination()
             export_checked(self.run_dir, destination)
         except (ValueError, OSError, KeyError) as exc:
             self.status.setText(f"Could not save the checked PDF: {exc}")
         else:
+            self.save_workspace()
             self.status.setText(f"Saved {destination.name}.")
+            self._refresh_cover_status()
 
     def create_cover_letter(self):
         if not self._can_export() or self.worker is not None:
             return
-        company = self.job_company or "Hiring Team"
-        title = self.job_title or self.job.toPlainText().splitlines()[0].strip()
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Review cover letter")
-        dialog.resize(720, 640)
-        layout = QVBoxLayout(dialog)
-        editor = QPlainTextEdit()
-        editor.setPlainText(draft_text(self.profile, company, title, self.keywords.toPlainText()))
-        layout.addWidget(editor)
-        controls = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        controls.accepted.connect(dialog.accept)
-        controls.rejected.connect(dialog.reject)
-        layout.addWidget(controls)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if (not self.job_company or not self.job_title) and not self.edit_application_details():
             return
-        destination = workspace_role_folder(company, title, self.data_dir) / "Alnajjar_CoverLetter.pdf"
+        from .desktop_cover import CoverEditor
+
         try:
-            export_cover_pdf(editor.toPlainText(), self.profile, destination)
-        except (ValueError, OSError) as exc:
-            self.status.setText(f"Could not save the cover letter: {exc}")
+            saved = load_draft(self.data_dir) or {}
+            saved_run = str(saved.get("last_run") or "")
+            if not re.fullmatch(r"[0-9a-f]{32}", saved_run):
+                saved_run = ""
+            latest = self.data_dir / "runs" / str(saved_run) / "result.json"
+            if (saved_run and saved_run != self.run_dir.name and latest.is_file()
+                    and latest.stat().st_mtime_ns > (self.run_dir / "result.json").stat().st_mtime_ns):
+                raise ValueError("A newer checked resume is available. Reopen this role before editing its letter.")
+            if self._dirty and not self.save_workspace():
+                return
+            editor = CoverEditor(self._letter_context(), self)
+        except (ValueError, KeyError, OSError) as exc:
+            self.status.setText(f"Could not open the cover letter: {exc}")
         else:
-            self.status.setText(f"Saved {destination.name}.")
+            editor.exec()
+            self._refresh_cover_status()
 
     def configure_model(self):
         from .desktop_dialogs import edit_settings

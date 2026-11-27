@@ -1932,6 +1932,113 @@ def use_resumeforge_pdf(job_id: int):
     }
 
 
+def _cover_workspace(job_id):
+    job = require_job(job_id)
+    return resumeforge_bridge.cover_workspace(DATA, job)
+
+
+cover_task_lock = threading.Lock()
+cover_tasks = {}
+cover_preview_lock = threading.Lock()
+
+
+@app.get("/api/jobs/{job_id}/cover-letter")
+def cover_letter_status(job_id: int, summary: bool = False):
+    try:
+        result = _cover_workspace(job_id).state()
+        if summary:
+            result.pop("draft", None)
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
+        result = {"can_generate": False, "exists": False, "ready": False, "message": str(exc)}
+    with cover_task_lock:
+        task = cover_tasks.get(job_id)
+        if task:
+            result["task"] = task.copy()
+    return result
+
+
+def _generate_cover_task(workspace, job_id, revision, options):
+    def progress(message):
+        with cover_task_lock:
+            cover_tasks[job_id].update(message=message)
+
+    try:
+        workspace.generate(revision, progress=progress, **options)
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
+        state = {"state": "failed", "message": str(exc)}
+    except Exception:
+        logging.exception("The explicit cover letter task could not finish")
+        state = {"state": "failed", "message": "ResumeForge could not finish the cover letter."}
+    else:
+        state = {"state": "ready", "message": "Cover letter ready."}
+    with cover_task_lock:
+        cover_tasks[job_id] = state
+
+
+@app.post("/api/jobs/{job_id}/cover-letter")
+def change_cover_letter(job_id: int, body: dict):
+    action = body.get("action")
+    revision = body.get("revision")
+    if action not in ("generate", "save") or type(revision) is not int or revision < 0:
+        raise HTTPException(400, "Choose a cover letter action and reopen its current draft.")
+    try:
+        workspace = _cover_workspace(job_id)
+        if action == "save":
+            return workspace.save(body.get("text"), revision)
+        options = {
+            "confirmed": body.get("confirmed") is True,
+            "instructions": str(body.get("instructions") or "")[:3000],
+            "company_url": str(body.get("company_url") or "")[:1800].strip(),
+        }
+        workspace.check_generation(revision, options["confirmed"])
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    with cover_task_lock:
+        if any(task["state"] == "running" for task in cover_tasks.values()):
+            raise HTTPException(409, "Another cover letter is still being drafted in JobPilot.")
+        cover_tasks.pop(job_id, None)
+        if len(cover_tasks) >= 24:
+            del cover_tasks[next(iter(cover_tasks))]
+        queued = {"state": "running", "message": "Preparing the cover letter…"}
+        cover_tasks[job_id] = queued.copy()
+    threading.Thread(
+        target=_generate_cover_task,
+        args=(workspace, job_id, revision, options),
+        name="JobPilot cover letter",
+        daemon=True,
+    ).start()
+    return JSONResponse({"task": queued}, status_code=202)
+
+
+@app.get("/api/jobs/{job_id}/cover-letter/preview")
+def cover_letter_preview(job_id: int):
+    import pypdfium2
+
+    try:
+        workspace = _cover_workspace(job_id)
+        pdf_path = _artifact_target(str(workspace.letter), document=True)
+        if workspace.letter.is_symlink() or pdf_path.stat().st_size > 15 * 1024 * 1024:
+            raise ValueError("The cover letter preview is unavailable.")
+        # Job details can be open in multiple UI windows. PDFium renders
+        # through one call at a time within this service.
+        with cover_preview_lock, pypdfium2.PdfDocument(str(pdf_path)) as pdf:
+            page = pdf[0]
+            try:
+                bitmap = page.render(scale=1.35)
+                try:
+                    stream = io.BytesIO()
+                    bitmap.to_pil().save(stream, format="PNG")
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+        return Response(
+            stream.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"}
+        )
+    except (OSError, ValueError, KeyError, pypdfium2.PdfiumError) as exc:
+        raise HTTPException(409, "The cover letter preview is unavailable.") from exc
+
+
 @app.post("/api/jobs/{job_id}/retry")
 @guard_job_mutation
 def retry_action(job_id: int):

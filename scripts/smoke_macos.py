@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -118,6 +119,20 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                     time.sleep(0.5)
                 assert not job["documents"].get("resumeforge_cover_pdf")
                 assert Path(job["documents"]["resumeforge_pdf"]).name == "Alnajjar_Resume.pdf"
+                cover_route = f"/api/jobs/{job_id}/cover-letter"
+                cover = request(cover_route)
+                assert cover["can_generate"] and not cover["exists"]
+                letter_path = Path(job["documents"]["resumeforge_pdf"]).with_name(
+                    "Alnajjar_CoverLetter.pdf"
+                )
+                assert not letter_path.exists()
+                try:
+                    request(cover_route, {"action": "generate", "revision": 0}, dashboard_headers)
+                except HTTPError as error:
+                    assert error.code == 409 and b"Configure a local model" in error.read()
+                else:
+                    raise AssertionError("A cover letter generated without a configured model")
+                assert not letter_path.exists()
                 extension_id = "a" * 32
                 code = request(
                     "/api/extension/pairing", {"extension_id": extension_id}, dashboard_headers
@@ -139,6 +154,7 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                     "fictional_profile": True,
                     "documents": True,
                     "automatic_resume_at_80": True,
+                    "cover_letter_opt_in": True,
                     "extension_api": True,
                     "gui": False,
                 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date
 from pathlib import Path
@@ -13,29 +14,38 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 
+def _junction(path: Path) -> bool:
+    return getattr(path, "is_junction", lambda: False)()
+
+
 def role_folder(company: str, title: str) -> Path:
     def safe(value: str) -> str:
         return re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", value).strip(" .")[:90] or "Role"
 
     root = Path.home() / "Downloads" / "JobPilot RF Docs"
     folder = root / f"{safe(company)} - {safe(title)}"
-    if (root.is_symlink() or root.is_junction() or folder.is_symlink() or folder.is_junction()
+    if (root.is_symlink() or _junction(root) or folder.is_symlink() or _junction(folder)
             or not folder.resolve().is_relative_to(root.resolve())):
         raise ValueError("The ResumeForge document folder is redirected.")
     return folder
 
 
-def workspace_role_folder(company: str, title: str, workspace: Path) -> Path:
-    """Keep JobPilot posting exports distinct while preserving standalone paths."""
+def posting_subfolder(folder: Path, name: str) -> Path:
+    posting = folder / name
+    if not (re.fullmatch(r"job-[1-9][0-9]*-[0-9a-f]{12}|role-[0-9a-f]{24}", name)
+            and not posting.is_symlink() and not _junction(posting)
+            and posting.resolve().is_relative_to(folder.resolve())):
+        raise ValueError("The ResumeForge posting document folder is redirected.")
+    return posting
+
+
+def workspace_role_folder(company: str, title: str, workspace: Path, posting: str = "") -> Path:
     folder = role_folder(company, title)
     name = Path(workspace).name
     if not re.fullmatch(r"job-[1-9][0-9]*-[0-9a-f]{12}", name):
-        return folder
-    posting = folder / name
-    if (posting.is_symlink() or posting.is_junction()
-            or not posting.resolve().is_relative_to(folder.resolve())):
-        raise ValueError("The ResumeForge posting document folder is redirected.")
-    return posting
+        role = "\n".join((str(workspace.resolve()), company.strip(), title.strip(), " ".join(posting.split())))
+        name = "role-" + hashlib.sha256(role.encode()).hexdigest()[:24]
+    return posting_subfolder(folder, name)
 
 
 def draft_text(profile, company: str, title: str, keywords: str = "") -> str:

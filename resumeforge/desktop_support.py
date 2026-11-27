@@ -39,7 +39,7 @@ def save_draft(data_dir: Path, draft: dict) -> None:
     _replace_file(data_dir / "draft.json", data)
 
 
-def export_checked(run_dir: Path, destination: Path) -> None:
+def checked_resume(run_dir: Path) -> tuple[dict, bytes]:
     result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
     report = result["report"]
     if (result["status"] != "ready" or not report.get("geometry_passed")
@@ -48,6 +48,11 @@ def export_checked(run_dir: Path, destination: Path) -> None:
     checked = (run_dir / "resume.pdf").read_bytes()
     if hashlib.sha256(checked).hexdigest() != report.get("pdf_sha256"):
         raise ValueError("The PDF has changed since it passed review. Build the resume again.")
+    return result, checked
+
+
+def export_checked(run_dir: Path, destination: Path) -> None:
+    _, checked = checked_resume(run_dir)
     if destination.suffix.lower() != ".pdf":
         raise ValueError("Choose a PDF filename.")
     _replace_file(destination, checked)

@@ -669,8 +669,23 @@ def _endpoint(settings: ModelSettings, purpose: str) -> str:
     return base + ("/models" if purpose == "models" else "/chat/completions")
 
 
-def _http(settings: ModelSettings, purpose: str, payload: dict | None = None) -> dict:
+class _NoModelRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _http(settings: ModelSettings, purpose: str, payload: dict | None = None, *, local_only=False) -> dict:
     from .local_runtime import ensure_running
+    endpoint = _endpoint(settings, purpose)
+    open_url = urllib.request.urlopen
+    if local_only:
+        parsed = urllib.parse.urlsplit(endpoint)
+        if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise RuntimeError("Cover letters require a local ResumeForge model endpoint.")
+        if parsed.hostname == "localhost":
+            netloc = "127.0.0.1" + (f":{parsed.port}" if parsed.port else "")
+            endpoint = parsed._replace(netloc=netloc).geturl()
+        open_url = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoModelRedirect()).open
     ensure_running(settings)
     started=time.monotonic()
     headers = {"Accept": "application/json"}
@@ -681,11 +696,11 @@ def _http(settings: ModelSettings, purpose: str, payload: dict | None = None) ->
         api_key = ''  # The installed loopback service never needs a cloud credential.
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(_endpoint(settings, purpose),
+    request = urllib.request.Request(endpoint,
         data=json.dumps(payload).encode("utf-8") if payload is not None else None,
         headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=settings.timeout_seconds) as response:
+        with open_url(request, timeout=settings.timeout_seconds) as response:
             body = response.read(2_000_001)
         if len(body) > 2_000_000:
             raise RuntimeError("Model service returned an oversized response.")
@@ -706,7 +721,8 @@ def _http(settings: ModelSettings, purpose: str, payload: dict | None = None) ->
         raise RuntimeError("Model service returned malformed JSON.") from exc
 
 
-def call_json(settings: ModelSettings, system: str, user: str, schema: dict) -> dict:
+def call_json(settings: ModelSettings, system: str, user: str, schema: dict, *,
+              output_model=None, max_tokens=6500, local_only=False) -> dict:
     """Call a configured model with JSON Schema validation and at most one repair.
 
     This never downloads a model or switches providers. Document extraction can
@@ -719,7 +735,8 @@ def call_json(settings: ModelSettings, system: str, user: str, schema: dict) -> 
     json_schema = schema
     # These are the application's complete output contracts. Keep validation in
     # Pydantic instead of shipping a second, partial JSON Schema implementation.
-    schema_model = next((model for model in (Profile, Plan, Review)
+    models = (output_model,) if output_model is not None else (Profile, Plan, Review)
+    schema_model = next((model for model in models
                          if model.model_json_schema() == json_schema), None)
     if schema_model is None:
         raise RuntimeError("Unsupported model output schema; use the canonical Profile, Plan or Review schema.")
@@ -732,13 +749,13 @@ def call_json(settings: ModelSettings, system: str, user: str, schema: dict) -> 
         if settings.provider == "ollama":
             payload = {"model": settings.model, "messages": messages, "stream": False,
                        "format": json_schema, "think": False,
-                       "options": {"temperature": 0.2, "num_ctx": 16384, "num_predict": 6500}}
+                       "options": {"temperature": 0.2, "num_ctx": 16384, "num_predict": max_tokens}}
         else:
             payload = {"model": settings.model, "messages": messages, "stream": False,
-                       "temperature": 0.2, "max_tokens": 6500,
+                       "temperature": 0.2, "max_tokens": max_tokens,
                        "response_format": {"type": "json_schema", "json_schema": {
                            "name": "resume_output", "schema": json_schema, "strict": False}}}
-        response = _http(settings, "chat", payload)
+        response = _http(settings, "chat", payload, local_only=True) if local_only else _http(settings, "chat", payload)
         try:
             if settings.provider == "ollama":
                 if response.get("done_reason") == "length":

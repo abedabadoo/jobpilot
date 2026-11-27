@@ -275,10 +275,10 @@ class Typesetter:
         warnings = [] if fitting else ["Some page space remains; the best available content was selected automatically. This is not an export error."]
         return Selection(selected, blocks, used, self.available-used, True, warnings)
 
-    def render(self, selection: Selection, path: Path) -> dict:
+    def render(self, selection: Selection, path: Path, *, title: str = "Resume") -> dict:
         path.parent.mkdir(parents=True, exist_ok=True)
         c = canvas.Canvas(str(path), pagesize=(self.t.page_width, self.t.page_height), pageCompression=1, invariant=1)
-        c.setTitle("Resume")
+        c.setTitle(title)
         c.setAuthor("ResumeForge")
         top = self.t.margin_top
         boxes = []

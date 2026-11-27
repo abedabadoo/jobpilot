@@ -1765,3 +1765,33 @@ option {
     transition: none !important;
   }
 }
+
+.cover-letter-dialog {
+  width: min(820px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+.cover-letter-container {
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+}
+
+.cover-letter-editor {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.cover-letter-field {
+  display: grid;
+  gap: 4px;
+}
+
+.cover-letter-preview img {
+  display: block;
+  width: min(100%, 660px);
+  height: auto;
+  margin: 12px auto;
+}
