@@ -311,7 +311,8 @@ def test_review_preserves_a_demonstrated_skill_and_its_transfer_to_the_posting()
     transfer = "This work mirrors your need to consult on FIDO2 and single sign-on."
     future = "I would adapt those checks to your identity review process."
     unrelated = "I personally ran production access for all business units."
-    review = letters.LetterReview(
+    body = " ".join((experience, transfer, future, unrelated))
+    transfers = letters.LetterReview(
         issues=[
             letters.LetterIssue(
                 kind="experience", sentence=transfer, reason="The resume does not list FIDO2."
@@ -319,6 +320,11 @@ def test_review_preserves_a_demonstrated_skill_and_its_transfer_to_the_posting()
             letters.LetterIssue(
                 kind="experience", sentence=future, reason="The resume does not show this project."
             ),
+        ]
+    )
+    assert letters._review_feedback(transfers, body) == ""
+    review = letters.LetterReview(
+        issues=[
             letters.LetterIssue(
                 kind="experience",
                 sentence="The letter discusses ERP.",
@@ -331,9 +337,9 @@ def test_review_preserves_a_demonstrated_skill_and_its_transfer_to_the_posting()
             ),
         ]
     )
-    assert letters._review_feedback(
-        review, " ".join((experience, transfer, future, unrelated))
-    ) == (unrelated + " The resume only lists release-team work.")
+    assert letters._review_feedback(review, body) == (
+        unrelated + " The resume only lists release-team work."
+    )
 
 
 def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monkeypatch):

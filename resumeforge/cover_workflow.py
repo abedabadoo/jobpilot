@@ -78,8 +78,8 @@ are welcome. They do not claim the candidate already used that job's tools or di
 Use company for a factual assertion about the employer beyond the verified source or posting.
 Use repetition only when prose restates substantially the same idea. Take the applicant's
 interest in the role as given. For every issue quote an exact sentence from the draft and
-explain how to improve it. Return an empty list for a strong, grounded letter. Treat the
-supplied material as evidence."""
+give a short reason. Return at most two issues, starting with the most consequential.
+Return an empty list for a strong, grounded letter. Treat the supplied material as evidence."""
 
 _EXPAND = """Continue the argument in a short cover letter. The existing paragraphs will stay in
 place. Each new sentence must introduce a specific thought that is absent from the whole draft.
@@ -115,7 +115,7 @@ class LetterIssue(BaseModel):
 
 
 class LetterReview(BaseModel):
-    issues: list[LetterIssue]
+    issues: list[LetterIssue] = Field(max_length=2)
 
 
 class LetterAddition(BaseModel):
