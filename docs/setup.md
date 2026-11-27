@@ -61,7 +61,9 @@ Closing the desktop window hides it to the tray. **Quit dashboard** leaves the w
 
 Open **Email**, enter your Gmail address and a [Google app password](https://myaccount.google.com/apppasswords), and select **Connect & test**. Google app passwords require an eligible account with two-step verification; see [Google's instructions](https://support.google.com/accounts/answer/185833). Keep the default host `imap.gmail.com`, encrypted port `993`, and folder `INBOX` unless you intentionally use another IMAP account or folder.
 
-The credential is stored in Windows Credential Manager. A successful connection test confirms that the folder can be opened. Use **Sync now** to read recent messages and import recognized job links. The dashboard shows the last check, message counts, links found, and imported opportunities. If the scan limit is reached, increase it under Advanced or shorten the date window. Reading leaves messages unread; there are no send or delete operations.
+JobPilot stores the credential in macOS Keychain or Windows Credential Manager. **Connect & test** verifies the folder. **Sync now** scans it on demand. With automatic scanning enabled, JobPilot checks for new alerts every 15 minutes while the service runs, independently of job-board searches. A limited scan picks up where the last one left off. It checks the headers first in Inbox and leaves messages and their read status untouched.
+
+JobPilot reads public posting details from employer pages and the Greenhouse and Lever job-board APIs. It scores the verified posting against your profile and preferences. Alerts with incomplete details stay available for research and review. Open an alert and choose **Research posting** to retry its public link. Resumes at the 80% threshold are queued only once the full posting is available.
 
 Saving an address alone does not authorize inbox access. JobPilot will report an unconnected account until the credential has been supplied and the connection verified. EML alert import is available without a persistent inbox connection.
 

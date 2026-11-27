@@ -6,12 +6,17 @@ from jobpilot import collectors
 
 
 @pytest.fixture
-def mailbox(monkeypatch):
+def messages():
     mail = EmailMessage()
     mail["Subject"] = "Security Engineer at Northstar Systems"
     mail.set_content(
         "Security Engineer at Northstar Systems https://www.linkedin.com/comm/jobs/view/12345/?trk=email"
     )
+    return {1: mail.as_bytes(), 2: mail.as_bytes()}
+
+
+@pytest.fixture
+def mailbox(monkeypatch, messages):
     calls = []
 
     class Inbox:
@@ -32,11 +37,16 @@ def mailbox(monkeypatch):
             calls.append(("select", folder, readonly))
             return "OK", [b"2"]
 
+        def response(self, name):
+            assert name == "UIDVALIDITY"
+            return name, [b"10"]
+
         def uid(self, command, *args):
             calls.append((command, *args))
             if command == "search":
-                return "OK", [b"1 2"]
-            return "OK", [(b"RFC822", mail.as_bytes())]
+                return "OK", [" ".join(str(uid) for uid in messages).encode()]
+            body = messages[int(args[0])]
+            return ("OK", [(b"RFC822", body)]) if body is not None else ("NO", [b"Unavailable"])
 
     monkeypatch.setattr(collectors, "_validate_host", lambda host: None)
     monkeypatch.setattr(collectors.keyring, "get_password", lambda *args: "saved-app-password")
@@ -63,7 +73,33 @@ def test_gmail_sync_is_read_only_counts_messages_and_deduplicates_links(mailbox)
     assert result["jobs"][0]["url"] == "https://www.linkedin.com/jobs/view/12345/"
     assert result["jobs"][0]["company"] == "Northstar Systems"
     assert ("select", "INBOX", True) in mailbox
-    assert all(call[-1] == "(BODY.PEEK[])" for call in mailbox if call[0] == "fetch")
+    assert all(call[-1].startswith("(BODY.PEEK[") for call in mailbox if call[0] == "fetch")
+    assert mailbox[0][2]["ssl_context"].check_hostname
+    assert result["checkpoint"] == {"validity": 10, "uid": 2}
+
+
+def test_incremental_scan_reads_new_headers_and_retries_a_failed_uid(mailbox, messages):
+    unrelated = EmailMessage()
+    unrelated["Subject"] = "Your utility bill"
+    unrelated.set_content("A misleading reference https://example.com/jobs/private-referral")
+    messages.update({2: unrelated.as_bytes(), 3: None, 4: messages[1]})
+    first = collectors.sync_email(config(limit=1))
+    assert first["truncated"] and first["checkpoint"] == {"validity": 10, "uid": 1}
+    mailbox.clear()
+    second = collectors.sync_email(config(checkpoint=first["checkpoint"]))
+    assert second["non_alerts"] == 1
+    assert second["scan_interrupted"]
+    assert second["checkpoint"] == {"validity": 10, "uid": 2}
+    assert not any(
+        uid == "4" or "BODY.PEEK[]" in command
+        for kind, uid, command in (call for call in mailbox if call[0] == "fetch")
+    )
+    messages[3] = messages[1]
+    third = collectors.sync_email(config(checkpoint=second["checkpoint"]))
+    assert third["messages_checked"] == 2
+    assert third["checkpoint"] == {"validity": 10, "uid": 4}
+    reset = collectors.sync_email(config(limit=1, checkpoint={"validity": 11, "uid": 999}))
+    assert reset["checkpoint"] == {"validity": 10, "uid": 1}
 
 
 def test_connection_check_reads_no_message_bodies(mailbox):

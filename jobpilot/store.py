@@ -168,6 +168,16 @@ class Store:
             )
 
     def _refresh(self, connection, job_id, existing, incoming):
+        if incoming.get("source") == "email" and incoming.get("description_missing"):
+            # A later digest must not downgrade verified text or reopen a
+            # posting whose public source has confirmed it is closed.
+            research = (existing.get("alert_research") or {}).get("state")
+            if research in {"verified", "closed", "duplicate"} or (
+                existing.get("description")
+                and not existing.get("description_missing")
+                and existing.get("source") != "email"
+            ):
+                return self.decorate(job_id, existing)
         # Discovery can improve the exact requisition route even after a resume
         # has been prepared. State and receipt evidence remain authoritative.
         for key in ["source_url", "apply_url"]:

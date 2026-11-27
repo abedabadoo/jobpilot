@@ -255,6 +255,9 @@ def classify_job(job, profile, conf):
         "alert_received_at",
         "alert_from",
         "alert_metadata_version",
+        "alert_title_source",
+        "posting_source",
+        "alert_research",
     }
     job = {k: v for k, v in job.items() if k in fields}
     job["status"] = "queued"
@@ -350,7 +353,6 @@ def discover_once():
     conf["_greenhouse_learned_boards"] = store.get("greenhouse_learned_boards", [])
     conf["_search_title_cursor"] = store.get("search_title_cursor", 0)
     profile = store.get("profile")
-    email_revision = store.get("_email_config_revision", 0)
     count_keys = ["checked", "imported", "existing", "filtered", "removed"]
     source_rows = {}
     result = {"status": "ok"}
@@ -486,21 +488,6 @@ def discover_once():
         store.event(
             f"Search finished: {len(store.jobs()) - before} new matching opportunities; {len(jobs)} source records checked."
         )
-        if conf.get("email", {}).get("enabled"):
-            summary = getattr(collectors, "get_last_email_result", lambda: None)()
-            if summary and not email_task_running.is_set():
-                email_counts = source_rows.get("email", {})
-                _save_email_result(
-                    {
-                        **summary,
-                        **{
-                            key: email_counts.get(key, 0)
-                            for key in ["existing", "filtered", "removed"]
-                        },
-                    },
-                    imported=email_counts.get("imported", 0),
-                    expected_revision=email_revision,
-                )
         if any(row["status"] != "ok" for row in source_rows.values()):
             result["status"] = "partial" if jobs else "error"
     except Exception as exc:
@@ -851,6 +838,10 @@ def _automatic_resume_due(job: dict, *, now: datetime | None = None) -> bool:
     becomes eligible as soon as the ResumeForge profile is saved.
     """
 
+    if job.get("source") == "email" and (
+        job.get("description_missing") or job.get("needs_description_review")
+    ):
+        return False
     try:
         if float(job.get("fit") or 0) < AUTO_RESUME_MIN_FIT:
             return False
@@ -1029,7 +1020,7 @@ async def lifespan(app):
     with email_sync_lock:
         previous_email = store.get("email_sync", {})
         if (
-            previous_email.get("state") in ["checking", "syncing"]
+            previous_email.get("state") in ["checking", "syncing", "researching"]
             and not email_task_running.is_set()
         ):
             store.set(
@@ -1047,6 +1038,7 @@ async def lifespan(app):
             ("discovery", discovery_loop),
             ("applications", application_loop),
             ("health", health_loop),
+            ("email", email_monitor_loop),
         ]:
             threading.Thread(target=target, name=name, daemon=True).start()
         if settings()["remote_intervention_enabled"]:
@@ -2243,7 +2235,7 @@ def _save_email_configuration(body: dict):
     conf = store.get("settings", {})
     conf["email"] = safe
     store.set("settings", conf)
-    store.set("_email_config_revision", store.get("_email_config_revision", 0) + 1)
+    store.set("_email_next_poll", 0)
     store.set(
         "email_sync",
         {
@@ -2264,12 +2256,17 @@ def email_status():
         "messages_available": 0,
         "messages_checked": 0,
         "messages_skipped": 0,
+        "non_alerts": 0,
         "links_found": 0,
         "imported": 0,
         "existing": 0,
         "filtered": 0,
         "removed": 0,
         "truncated": False,
+        "researched": 0,
+        "awaiting_research": 0,
+        "unverified": 0,
+        "closed": 0,
     }
     return {
         **defaults,
@@ -2279,17 +2276,22 @@ def email_status():
     }
 
 
-def _save_email_result(result, imported=0, complete_task=False, expected_revision=None):
+def _save_email_result(result, imported=0, complete_task=False):
     fields = [
         "checked_at",
         "messages_available",
         "messages_checked",
         "messages_skipped",
+        "non_alerts",
         "links_found",
         "truncated",
         "existing",
         "filtered",
         "removed",
+        "researched",
+        "awaiting_research",
+        "unverified",
+        "closed",
     ]
     summary = {key: result[key] for key in fields if key in result}
     result_state = result.get("state", "connected")
@@ -2304,134 +2306,240 @@ def _save_email_result(result, imported=0, complete_task=False, expected_revisio
         imported=imported,
     )
     with email_sync_lock:
-        if expected_revision is not None and expected_revision != store.get(
-            "_email_config_revision", 0
-        ):
-            return email_status()
         if email_task_running.is_set() and not complete_task:
             return email_status()
         store.set("email_sync", summary)
         worker["email_status"] = summary["message"]
-        if complete_task:
-            email_task_running.clear()
     return summary
 
 
-def _enrich_email_alert(alert):
-    """Keep the alert usable when a detail link returns a sign-in or generic page."""
-    from . import collectors
+EMAIL_SCAN_INTERVAL = 15 * 60
+EMAIL_RESEARCH_BATCH = 6
+EMAIL_RESEARCH_RETRIES = (5 * 60, 30 * 60)
 
-    job = dict(alert)
-    try:
-        details = collectors.fetch_job(job.get("url", ""))
-        if details.get("needs_description_review"):
-            raise ValueError("The job page did not provide a verified job posting.")
-        job.update({key: value for key, value in details.items() if value not in [None, "", []]})
-        job["source"] = "email"
-        if job.get("url") != alert.get("url"):
-            job["source_url"] = alert.get("url")
-        job["description_missing"] = (
-            len(str(job.get("description", "")).strip()) < 80
-            or not job.get("company")
-            or not job.get("title")
+
+def _email_pending(job):
+    return (
+        job.get("source") == "email"
+        and job["status"] in {"queued", "needs_review", "review_required"}
+        and (job.get("description_missing") or job.get("needs_description_review"))
+        and not (job.get("documents") or job.get("applied") or job.get("uncertain"))
+        and not job.get("attempts")
+        and not _manual_handoff_active(job)
+        and (job.get("review_session") or {}).get("state") not in {"opening", "opened"}
+    )
+
+
+def _email_due(job, now):
+    research = job.get("alert_research") or {}
+    return _email_pending(job) and (
+        not research
+        or (research.get("state") == "pending" and (research.get("retry_at") or 0) <= now)
+    )
+
+
+def _matching_employer_posting(alert, saved_jobs):
+    def signature(job):
+        return tuple(
+            " ".join(str(job.get(key) or "").casefold().split())
+            for key in ("title", "company", "location")
         )
-        for key in ["alert_subject", "alert_received_at", "alert_from", "alert_metadata_version"]:
-            if key in alert:
-                job[key] = alert[key]
-    except Exception as exc:
-        report_error(
-            "The email alert was imported, but the full job posting could not be read. Open its link to check the details.",
-            category="fetch",
-            job=job,
-            detail=f"{type(exc).__name__}: {exc}",
+
+    identity = signature(alert)
+    if not all(identity):
+        return None
+    matches = [
+        job
+        for job in saved_jobs
+        if job.get("source", "").casefold() in {"greenhouse", "lever", "ashby", "employer"}
+        and signature(job) == identity
+        and not (job.get("description_missing") or job.get("needs_description_review"))
+        and len(str(job.get("description") or "")) >= 80
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _research_email_batch(job_id=None):
+    from .posting_research import PostingClosed, research_posting
+
+    deadline = time.monotonic() + 45
+    saved_jobs = store.jobs()
+    candidates = [
+        job
+        for job in saved_jobs
+        if (
+            _email_due(job, time.time())
+            if job_id is None
+            else job["id"] == job_id and _email_pending(job)
         )
-    return job
-
-
-def _email_work(mode, config):
-    from . import collectors
-    from .core import canonical_url
-
-    completed = False
-    try:
-        result = (
-            collectors.check_email_connection(config)
-            if mode == "checking"
-            else collectors.sync_email(config)
-        )
-        imported, unchanged, filtered, removed = 0, 0, 0, 0
-        existing_jobs = store.jobs()
-        existing = {job["id"] for job in existing_jobs}
-        existing_email_routes = {
-            canonical_url(saved[key])
-            for saved in existing_jobs
-            if saved.get("source") == "email"
-            for key in ["url", "source_url", "apply_url"]
-            if saved.get(key)
-        }
-
-        def refresh_filtered(classified):
-            if classified.get("source") == "email" and any(
-                canonical_url(classified[key]) in existing_email_routes
-                for key in ["url", "source_url", "apply_url"]
-                if classified.get(key)
-            ):
-                store.add_job(classified)
-
-        fetches, fetch_deadline = 0, time.monotonic() + 45
-        for alert in result.get("jobs", []) if mode == "syncing" else []:
-            job = dict(alert)
-            classified = classify_job(job, store.get("profile"), settings())
-            if classified.get("status") == "skipped":
-                filtered += 1
-                refresh_filtered(classified)
-                continue
-            if (
-                (
-                    job.get("description_missing")
-                    or len(str(job.get("description", ""))) < 80
-                    or not job.get("company")
-                )
-                and fetches < 3
-                and time.monotonic() < fetch_deadline
-            ):
-                fetches += 1
-                job = _enrich_email_alert(job)
-            try:
-                classified = classify_job(job, store.get("profile"), settings())
-                if classified.get("status") == "skipped":
-                    filtered += 1
-                    refresh_filtered(classified)
-                    continue
-                saved = store.add_job(classified)
-                if saved is not None and saved["id"] not in existing:
-                    imported += 1
-                    existing.add(saved["id"])
-                elif saved is not None:
-                    unchanged += 1
-                else:
-                    removed += 1
-            except Exception as exc:
+    ]
+    candidates.sort(key=lambda job: (-(job.get("fit") or 0), job["id"]))
+    verified = 0
+    for job in candidates[:EMAIL_RESEARCH_BATCH]:
+        if stop_event.is_set() or time.monotonic() >= deadline:
+            break
+        previous = job.get("alert_research") or {}
+        attempt = 1 if job_id is not None else int(previous.get("attempts") or 0) + 1
+        state = "verified"
+        duplicate = None
+        try:
+            details = research_posting(job)
+        except PostingClosed:
+            state = "closed"
+        except Exception as exc:
+            state = "pending" if attempt <= len(EMAIL_RESEARCH_RETRIES) else "unverified"
+            if alternate := _matching_employer_posting(job, saved_jobs):
+                # The saved employer role must still have a live public
+                # posting. Do not use an old cached description as proof.
+                try:
+                    details = research_posting(alternate)
+                    duplicate = alternate["id"]
+                    state = "duplicate"
+                except Exception:
+                    pass
+            if state != "duplicate" and attempt == 1:
                 report_error(
-                    "A job alert could not be imported. Open the posting and import its link again.",
-                    category="email",
+                    "A full posting was unavailable for a saved inbox alert. JobPilot will retry.",
+                    category="fetch",
                     job=job,
-                    detail=f"{type(exc).__name__}: {exc}",
+                    detail=type(exc).__name__,
                 )
+        with store.lock:
+            current = store.get_job(job["id"])
+            if not current or not _email_pending(current):
+                continue
+            research = {"state": state, "attempts": attempt, "checked_at": store.now()}
+            if state in {"verified", "duplicate"}:
+                verified += 1
+                if duplicate:
+                    research["duplicate_of"] = duplicate
+                    details["source_url"] = current.get("source_url") or current["url"]
+                enriched = classify_job(
+                    {**current, **details, "alert_research": research},
+                    store.get("profile"),
+                    settings(),
+                )
+                # The stable alert row may already be bookmarked. Preserve its
+                # ID and job identity while updating its public posting details.
+                enriched.pop("url", None)
+                enriched.setdefault("note", "")
+                enriched.setdefault("review_reason", None)
+                if duplicate:
+                    enriched.update(
+                        status="skipped", note="Already saved from the employer's job board."
+                    )
+                store.update_job(job["id"], **enriched)
+            elif state == "closed":
+                store.update_job(
+                    job["id"],
+                    alert_research=research,
+                    status="skipped",
+                    note="The employer's public posting has closed.",
+                )
+            else:
+                if state == "pending":
+                    research["retry_at"] = time.time() + EMAIL_RESEARCH_RETRIES[attempt - 1]
+                store.update_job(
+                    job["id"],
+                    alert_research=research,
+                    note="Full posting unavailable. JobPilot will retry."
+                    if state == "pending"
+                    else "Full posting unverified. Review the public link.",
+                )
+    return verified
+
+
+def _stage_email_alerts(alerts):
+    existing_jobs = store.jobs()
+    existing = {job["id"] for job in existing_jobs}
+    routes = {
+        canonical_url(job[key])
+        for job in existing_jobs
+        for key in ("url", "source_url", "apply_url")
+        if job.get(key)
+    }
+    counts = dict.fromkeys(("imported", "existing", "filtered", "removed"), 0)
+    profile, conf = store.get("profile"), settings()
+    for alert in alerts:
+        # Location and job-summary hints are provisional. A confident title
+        # can eliminate an obvious mismatch, but an inferred title cannot.
+        classified = classify_job(
+            {**alert, "source": "email", "description_missing": True, "location": ""},
+            profile,
+            conf,
+        )
+        classified["location"] = alert.get("location", "")
+        if (
+            alert.get("title") in (None, "", "Job from email alert")
+            or alert.get("alert_title_source") == "subject"
+        ) and classified.get("note") != "Company is excluded in preferences.":
+            classified.update(status="needs_review", note="Waiting for the public posting.")
+        if classified["status"] == "skipped":
+            counts["filtered"] += 1
+            if canonical_url(classified["url"]) in routes:
+                store.add_job(classified)
+            continue
+        saved = store.add_job(classified)
+        if saved is None:
+            counts["removed"] += 1
+        elif saved["id"] in existing:
+            counts["existing"] += 1
+        else:
+            counts["imported"] += 1
+            existing.add(saved["id"])
+    return counts
+
+
+def _email_work(mode, config, job_id=None):
+    from . import collectors
+
+    try:
+        if mode == "checking":
+            _save_email_result(collectors.check_email_connection(config), complete_task=True)
+            return
+        result = email_status()
         if mode == "syncing":
-            result.update(
-                existing=unchanged,
-                filtered=filtered,
-                removed=removed,
-                message=(
-                    f"Found {result.get('links_found', 0)} job links: {imported} new, "
-                    f"{unchanged} already saved, {filtered} outside preferences, "
-                    f"{removed} previously removed."
-                ),
+            account = [config.get(key) for key in ("host", "username", "mailbox", "lookback_days")]
+            saved = store.get("_email_checkpoint", {})
+            checkpoint = saved.get("cursor") if saved.get("account") == account else None
+            result = collectors.sync_email({**config, "checkpoint": checkpoint})
+            result.update(_stage_email_alerts(result["jobs"]))
+            # Only advance after staging all jobs. A crash may repeat a
+            # batch, but the store deduplicates URLs and respects removals.
+            if result.get("checkpoint"):
+                store.set("_email_checkpoint", {"account": account, "cursor": result["checkpoint"]})
+            delay = (
+                5 * 60
+                if result.get("scan_interrupted")
+                else 30
+                if result.get("truncated") and result.get("checkpoint")
+                else EMAIL_SCAN_INTERVAL
             )
-        with email_sync_lock:
-            _save_email_result(result, imported, complete_task=True)
-            completed = True
+            store.set("_email_next_poll", time.time() + delay)
+        result["researched"] = (result.get("researched") or 0) + _research_email_batch(job_id)
+        jobs = store.jobs()
+        pending = [job for job in jobs if _email_pending(job)]
+        unverified = sum(
+            (job.get("alert_research") or {}).get("state") == "unverified" for job in pending
+        )
+        inbox_state = (
+            result.get("inbox_state", "connected") if mode == "researching" else "connected"
+        )
+        result.update(
+            state=inbox_state,
+            awaiting_research=len(pending) - unverified,
+            unverified=unverified,
+            closed=sum((job.get("alert_research") or {}).get("state") == "closed" for job in jobs),
+            message=result.get("inbox_message")
+            if inbox_state != "connected"
+            else (
+                f"Found {result.get('links_found', 0)} job links: {result.get('imported', 0)} new, "
+                f"{result.get('existing', 0)} already saved, "
+                f"{result.get('filtered', 0)} outside preferences, "
+                f"{result.get('removed', 0)} previously removed."
+            ),
+        )
+        _save_email_result(result, result.get("imported", 0), complete_task=True)
     except Exception as exc:
         message = (
             str(exc)
@@ -2440,40 +2548,64 @@ def _email_work(mode, config):
         )
         report_error(message, category="email", detail=f"{type(exc).__name__}: {exc}")
         with email_sync_lock:
+            store.set("_email_next_poll", time.time() + EMAIL_SCAN_INTERVAL)
             store.set(
                 "email_sync",
                 {**email_status(), "state": "error", "message": message, "checked_at": store.now()},
             )
             worker["email_status"] = message
-            email_task_running.clear()
-            completed = True
     finally:
-        if not completed:
-            with email_sync_lock:
-                email_task_running.clear()
+        with email_sync_lock:
+            email_task_running.clear()
 
 
-def _start_email(mode):
-    config = settings().get("email", {})
-    if not config.get("username"):
-        raise HTTPException(
-            400, "Save your Gmail address and a Google app password in Email settings first."
-        )
+def email_monitor_loop():
+    while not stop_event.wait(15):
+        conf = settings().get("email", {})
+        if (
+            not (conf.get("enabled") and conf.get("credential_saved") and conf.get("username"))
+            or email_task_running.is_set()
+        ):
+            continue
+        if email_status()["state"] == "not_connected":
+            continue
+        now = time.time()
+        if now >= store.get("_email_next_poll", 0):
+            _start_email("syncing")
+        elif any(_email_due(job, now) for job in store.jobs()):
+            _start_email("researching")
+
+
+def _start_email(mode, job_id=None):
     with email_sync_lock:
+        config = settings().get("email", {})
+        if job_id is None and not config.get("username"):
+            raise HTTPException(
+                400, "Save your Gmail address and a Google app password in Email settings first."
+            )
         if email_task_running.is_set():
+            if job_id is not None:
+                raise HTTPException(409, "Wait for the active inbox or research task to finish.")
             return JSONResponse({"ok": True, "state": email_status()["state"]}, status_code=202)
         email_task_running.set()
+        prior = email_status()
+        if mode == "researching":
+            # Keep the last inbox result while the work uses only saved links.
+            prior["inbox_state"] = prior["state"]
+            prior["inbox_message"] = prior["message"]
         store.set(
             "email_sync",
             {
-                **email_status(),
+                **prior,
                 "state": mode,
-                "message": "Checking the Gmail connection."
-                if mode == "checking"
-                else "Reading job alerts from Gmail.",
+                "message": {
+                    "checking": "Checking the Gmail connection.",
+                    "syncing": "Reading job alerts from Gmail.",
+                    "researching": "Verifying public postings for saved alerts.",
+                }[mode],
             },
         )
-        threading.Thread(target=_email_work, args=(mode, dict(config)), daemon=True).start()
+        threading.Thread(target=_email_work, args=(mode, dict(config), job_id), daemon=True).start()
     return JSONResponse({"ok": True, "state": mode}, status_code=202)
 
 
@@ -2485,6 +2617,13 @@ def check_email(body: dict | None = None):
 @app.post("/api/email/sync")
 def sync_email(body: dict | None = None):
     return _start_email("syncing")
+
+
+@app.post("/api/jobs/{job_id}/email/research")
+def research_email_job(job_id: int):
+    if not _email_pending(require_job(job_id)):
+        raise HTTPException(409, "This alert does not need public posting research.")
+    return _start_email("researching", job_id=job_id)
 
 
 def _artifact_target(path, *, document=False):

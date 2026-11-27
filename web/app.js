@@ -809,7 +809,7 @@
       form.elements.namedItem('folder').value = text(email.mailbox ?? email.folder, 'INBOX');
       form.elements.namedItem('enabled').checked = email.enabled ?? true;
     }
-    const busy = ['checking', 'syncing'].includes(sync.state);
+    const busy = ['checking', 'syncing', 'researching'].includes(sync.state);
     form.querySelector('[type=submit]').disabled = busy || !connected;
     $('syncEmail').disabled = busy || !connected;
     $('emailStatus').textContent = friendlyMessage(
@@ -833,6 +833,10 @@
         ['Opportunities added', sync.imported ?? 0],
         ['Already saved', sync.existing ?? 0],
         ['Filtered', sync.filtered ?? 0],
+        ['Postings verified', sync.researched ?? 0],
+        ['Awaiting research', sync.awaiting_research ?? 0],
+        ['Unverified postings', sync.unverified ?? 0],
+        ['Closed postings', sync.closed ?? 0],
       ].forEach(([label, value]) => {
         const item = el('div');
         item.append(el('span', '', label), el('strong', '', value));
@@ -843,7 +847,7 @@
           el(
             'p',
             'truncated-warning',
-            `Checked ${number(sync.messages_checked ?? 0)} of ${number(sync.messages_available ?? 0)} recent messages; increase the scan limit in Advanced.`,
+            `Checked ${number(sync.messages_checked ?? 0)} of ${number(sync.messages_available ?? 0)} eligible messages. Sync again to continue or leave automatic scanning on.`,
           ),
         );
     }
@@ -1315,6 +1319,35 @@
       links.append(apply);
     }
     content.append(links);
+    if (job.source === 'email') {
+      const research = job.alert_research || {};
+      const labels = {
+        pending: 'Waiting to verify the full posting.',
+        unverified: 'The public link did not provide a full posting.',
+        closed: 'The employer’s posting has closed.',
+        duplicate: 'This role is already saved from the employer’s job board.',
+        verified: `Posting verified from ${text(job.posting_source, 'the public listing')}.`,
+      };
+      const status = labels[research.state] || (job.description_missing ? labels.pending : '');
+      if (status) content.append(el('p', 'modal-note', status));
+      if (
+        job.description_missing &&
+        !busy &&
+        !isApplied(job) &&
+        ['queued', 'needs_review', 'review_required'].includes(job.status)
+      ) {
+        const retry = button('Research posting', 'secondary', 'search');
+        retry.addEventListener('click', () =>
+          action(
+            retry,
+            `/api/jobs/${encodeURIComponent(job.id)}/email/research`,
+            {},
+            'Research started.',
+          ),
+        );
+        links.append(retry);
+      }
+    }
     const keywordSection = el('section', 'detail-section');
     keywordSection.append(el('h3', '', 'Keywords from the job posting'));
     const keywords = job.keywords || {},

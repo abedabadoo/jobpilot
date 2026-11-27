@@ -15,13 +15,16 @@ import logging
 import math
 import re
 import socket
+import ssl
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email import policy
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
+import certifi
 import keyring
 import requests
 from bs4 import BeautifulSoup
@@ -80,10 +83,14 @@ def validate_public_url(url: str, *, allow_fixture: bool = False) -> str:
 
 def _get_public(url: str) -> tuple[str, str]:
     """Read bounded pages (4 MiB; known ATS APIs 32 MiB), checking redirects."""
+    deadline = time.monotonic() + 30
     with requests.Session() as session:
         session.trust_env = False
         for _ in range(5):
             url = validate_public_url(url)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Public posting lookup timed out")
             cap = (
                 32 * 1024 * 1024
                 if urlsplit(url).hostname
@@ -93,7 +100,7 @@ def _get_public(url: str) -> tuple[str, str]:
             with session.get(
                 url,
                 allow_redirects=False,
-                timeout=(6, 20),
+                timeout=(min(6, remaining), min(20, remaining)),
                 stream=True,
                 headers={
                     "User-Agent": "JobPilot/1.0 job discovery",
@@ -109,6 +116,8 @@ def _get_public(url: str) -> tuple[str, str]:
                 response.raise_for_status()
                 chunks, size = [], 0
                 for chunk in response.iter_content(65536):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Public posting lookup timed out")
                     size += len(chunk)
                     if size > cap:
                         raise ValueError("Job page exceeds the download limit")
@@ -141,11 +150,25 @@ def _date(value):
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
+def _description(value) -> str:
+    source = html.unescape(str(value or ""))
+    if not re.search(r"<[a-z][^>]*>", source, re.I):
+        return source.strip()
+    soup = BeautifulSoup(source, "html.parser")
+    for tag in soup(["script", "style", "img"]):
+        tag.decompose()
+    for block in soup(["p", "li", "br", "h1", "h2", "h3", "h4", "div"]):
+        block.append("\n")
+    return "\n".join(
+        cleaned for line in soup.get_text().splitlines() if (cleaned := " ".join(line.split()))
+    )
+
+
 def _canonical_link(url: str) -> str:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     path = parts.path
-    if host.endswith("linkedin.com"):
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
         found = re.search(r"/jobs/view/(\d+)", path)
         if found:
             return f"https://www.linkedin.com/jobs/view/{found[1]}/"
@@ -165,7 +188,7 @@ def _job(source, url, title="", company="", location="", description="", posted_
         "title": _text(title),
         "company": _text(company),
         "location": _text(location),
-        "description": _text(description)[:120000],
+        "description": _description(description)[:120000],
         "posted_at": _date(posted_at),
         **extra,
     }
@@ -189,13 +212,20 @@ def fetch_job(url: str) -> dict:
     validate_public_url(url)
     content, final_url = _get_public(url)
     soup = BeautifulSoup(content, "html.parser")
+    postings = []
     for script in soup.find_all("script", type="application/ld+json"):
         try:
-            postings = list(_jsonld_postings(json.loads(script.get_text())))
+            postings.extend(_jsonld_postings(json.loads(script.get_text())))
         except (ValueError, TypeError):
             continue
-        if not postings:
-            continue
+    if len(postings) > 1:
+        postings = [
+            item
+            for item in postings
+            if isinstance(item.get("url"), str)
+            and _canonical_link(urljoin(final_url, item["url"])) == _canonical_link(final_url)
+        ]
+    if len(postings) == 1:
         posting = postings[0]
         org = posting.get("hiringOrganization") or {}
         company = org.get("name", "") if isinstance(org, dict) else str(org)
@@ -214,8 +244,17 @@ def fetch_job(url: str) -> dict:
                 )
             elif address:
                 labels.append(str(address))
-        if posting.get("jobLocationType") == "TELECOMMUTE":
+        remote = "TELECOMMUTE" in (posting.get("jobLocationType") or [])
+        if remote:
             labels.insert(0, "Remote")
+            regions = posting.get("applicantLocationRequirements") or []
+            if isinstance(regions, dict):
+                regions = [regions]
+            labels.extend(
+                str(region["name"])
+                for region in regions
+                if isinstance(region, dict) and region.get("name")
+            )
         return _job(
             "employer",
             final_url,
@@ -224,6 +263,8 @@ def fetch_job(url: str) -> dict:
             "; ".join(labels),
             posting.get("description", ""),
             posting.get("datePosted"),
+            is_remote=remote,
+            valid_through=_date(posting.get("validThrough")),
             requisition_id=_text(posting.get("identifier", {}).get("value", ""))
             if isinstance(posting.get("identifier"), dict)
             else "",
@@ -266,7 +307,7 @@ def _alert_job_link(url: str) -> bool:
         if host == "linkedin.com" or host.endswith(".linkedin.com"):
             return bool(re.search(r"/jobs/view/\d+", parts.path))
         if host == "indeed.com" or host.endswith(".indeed.com"):
-            return bool(parse_qs(parts.query).get("jk"))
+            return any(parse_qs(parts.query).get(key) for key in ("jk", "vjk"))
         if host.endswith(".greenhouse.io"):
             return host in {"boards.greenhouse.io", "job-boards.greenhouse.io"} and bool(
                 re.search(r"^/[^/]+/(?:jobs/)?\d+/?$", parts.path)
@@ -294,11 +335,23 @@ def _alert_destination(url: str) -> str:
                 url = nested
                 continue
         break
-    return (
-        _canonical_link(url)
-        if _alert_job_link(url) or re.search(r"/comm/jobs/view/\d+", url)
-        else url
-    )
+    if not _alert_job_link(url):
+        return url
+    # Do not send recipient IDs or tracking parameters from an email to a
+    # public careers site. Keep only the parameters that identify the job.
+    parts = urlsplit(_canonical_link(url))
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query)
+        if key.casefold() in {"jk", "vjk", "gh_jid", "jobid", "job_id", "requisitionid"}
+        and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value)
+    ]
+    host = parts.hostname or ""
+    if host == "indeed.com" or host.endswith(".indeed.com"):
+        ids = {key.casefold(): value for key, value in query}
+        if key := ids.get("jk") or ids.get("vjk"):
+            return urlunsplit(("https", "www.indeed.com", "/viewjob", urlencode({"jk": key}), ""))
+    return urlunsplit(parts._replace(query=urlencode(query), fragment=""))
 
 
 def _alert_has_title(title: str) -> bool:
@@ -429,6 +482,7 @@ def import_eml(text: str | bytes) -> list[dict]:
             selected[url] = (rank, title, company, location, context)
     jobs = []
     for url, (_, title, company, location, context) in selected.items():
+        title_source = "card" if _alert_has_title(title) else "subject"
         title, inferred_company = _alert_title_company(title, str(message.get("Subject", "")), url)
         jobs.append(
             _job(
@@ -440,6 +494,7 @@ def import_eml(text: str | bytes) -> list[dict]:
                 description=context or "\n".join(description_parts)[:20000],
                 description_missing=True,
                 alert_metadata_version=1,
+                alert_title_source=title_source,
                 alert_received_at=str(message.get("Date", "")),
                 alert_subject=str(message.get("Subject", "")),
                 alert_from=str(message.get("From", "")),
@@ -460,12 +515,15 @@ def configure_email(config: dict) -> dict:
     _validate_host(host)
     if int(config.get("port", 993)) != 993:
         raise ValueError("Encrypted IMAP on port 993 is required")
+    mailbox = str(config.get("mailbox") or "INBOX").strip()
+    if not 1 <= len(mailbox) <= 128 or any(ord(c) < 32 for c in mailbox):
+        raise ValueError("Choose a valid IMAP folder name")
     safe = {
         "host": host,
         "port": 993,
         "username": username,
         "enabled": bool(config.get("enabled", False)),
-        "mailbox": str(config.get("mailbox", "INBOX"))[:128],
+        "mailbox": mailbox,
         "limit": max(1, min(int(config.get("limit", 100)), 500)),
         "lookback_days": max(1, min(int(config.get("lookback_days", 14)), 90)),
     }
@@ -484,6 +542,29 @@ class EmailConnectionError(ValueError):
     """An inbox failure with a message suitable for the dashboard."""
 
 
+def _looks_like_job_alert(raw_headers: bytes) -> bool:
+    headers = email.message_from_bytes(raw_headers, policy=policy.default)
+    subject = str(headers.get("Subject", ""))
+    return bool(
+        re.search(
+            r"\bjob (?:alerts?|recommendations?|digest)\b|\b(?:new|recommended|matching|similar) jobs?\b"
+            r"|\bjobs (?:for you|matching|you may like)\b"
+            r"|\b(?:engineer|analyst|developer|security|devops) jobs? (?:in|near|at)\b"
+            r"|\b(?:engineer|analyst|developer|specialist|manager|officer|architect|"
+            r"coordinator|technician|administrator|director|scientist|consultant)\b.{0,90}\bat\b",
+            subject,
+            re.I,
+        )
+    )
+
+
+def _imap_bytes(parts):
+    return next(
+        (part[1] for part in parts if isinstance(part, tuple) and isinstance(part[1], bytes)),
+        None,
+    )
+
+
 def _read_email(config: dict, *, fetch_messages: bool) -> dict:
     host = config.get("host", "imap.gmail.com")
     try:
@@ -497,16 +578,27 @@ def _read_email(config: dict, *, fetch_messages: bool) -> dict:
         raise EmailConnectionError(
             "Add your Gmail address and a Google app password in Email settings, then test the connection."
         )
-    jobs, checked, skipped, available = {}, 0, 0, 0
+    jobs, checked, skipped, non_alerts = {}, 0, 0, 0
+    checkpoint = None
+    interrupted = False
     try:
-        with imaplib.IMAP4_SSL(host, 993, timeout=20) as inbox:
+        with imaplib.IMAP4_SSL(
+            host, 993, ssl_context=ssl.create_default_context(cafile=certifi.where()), timeout=20
+        ) as inbox:
             try:
                 inbox.login(config["username"], password)
             except imaplib.IMAP4.error as exc:
                 raise EmailConnectionError(
                     "Gmail did not accept this connection. Save a Google app password, rather than your normal account password, and try again."
                 ) from exc
-            status, _ = inbox.select(config.get("mailbox", "INBOX"), readonly=True)
+            mailbox = config.get("mailbox", "INBOX")
+            # IMAP folder names containing spaces are quoted strings.
+            folder = (
+                mailbox
+                if mailbox.upper() == "INBOX"
+                else ('"' + mailbox.replace("\\", "\\\\").replace('"', '\\"') + '"')
+            )
+            status, _ = inbox.select(folder, readonly=True)
             if status != "OK":
                 raise EmailConnectionError(
                     "JobPilot connected to your email account but could not open the selected folder. Choose INBOX in Email settings."
@@ -518,29 +610,52 @@ def _read_email(config: dict, *, fetch_messages: bool) -> dict:
                 raise EmailConnectionError(
                     "JobPilot connected to Gmail but could not list recent messages. Try Sync now again."
                 )
-            identifiers = (result[0] or b"").split()
+            identifiers = sorted({int(uid) for uid in (result[0] or b"").split() if uid.isdigit()})
+            # A UID is meaningful only within this mailbox's UIDVALIDITY.
+            response = inbox.response("UIDVALIDITY")[1] if hasattr(inbox, "response") else []
+            validity = next((int(item) for item in response or [] if item and item.isdigit()), None)
+            previous = config.get("checkpoint") or {}
+            last_uid = previous.get("uid", 0) if validity == previous.get("validity") else 0
+            identifiers = [uid for uid in identifiers if not validity or uid > last_uid]
             available = len(identifiers)
             limit = max(1, min(int(config.get("limit", 100)), 500))
-            for identifier in identifiers[-limit:] if fetch_messages else []:
-                status, parts = inbox.uid("fetch", identifier, "(BODY.PEEK[])")
+            deadline = time.monotonic() + 60
+            for uid in identifiers[:limit] if fetch_messages else []:
+                if time.monotonic() >= deadline:
+                    break
+                if mailbox.upper() == "INBOX":
+                    status, parts = inbox.uid(
+                        "fetch", str(uid), "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)])"
+                    )
+                    headers = _imap_bytes(parts)
+                    if status != "OK" or headers is None:
+                        interrupted = True
+                        break
+                    if not _looks_like_job_alert(headers):
+                        checked += 1
+                        non_alerts += 1
+                        checkpoint = {"validity": validity, "uid": uid} if validity else None
+                        continue
+                status, parts = inbox.uid("fetch", str(uid), f"(BODY.PEEK[]<0.{_MAX_BODY + 1}>)")
+                body = _imap_bytes(parts)
+                if status != "OK" or body is None:
+                    interrupted = True
+                    break
                 checked += 1
-                if status != "OK":
+                checkpoint = {"validity": validity, "uid": uid} if validity else None
+                if len(body) > _MAX_BODY:
                     skipped += 1
                     continue
-                bodies = [
-                    part[1]
-                    for part in parts
-                    if isinstance(part, tuple) and isinstance(part[1], bytes)
-                ]
-                if not bodies or any(len(body) > _MAX_BODY for body in bodies):
+                try:
+                    for job in import_eml(body):
+                        # Keep the alert identity and card metadata, not the
+                        # contents of a digest or unrelated application email.
+                        job["description"] = " · ".join(
+                            job[key] for key in ("title", "company", "location") if job.get(key)
+                        )
+                        jobs[job["url"]] = job
+                except (ValueError, TypeError, UnicodeError):
                     skipped += 1
-                    continue
-                for body in bodies:
-                    try:
-                        for job in import_eml(body):
-                            jobs.setdefault(job["url"], job)
-                    except (ValueError, TypeError, UnicodeError):
-                        skipped += 1
     except EmailConnectionError:
         raise
     except Exception as exc:
@@ -554,6 +669,9 @@ def _read_email(config: dict, *, fetch_messages: bool) -> dict:
         "messages_available": available,
         "messages_checked": checked,
         "messages_skipped": skipped,
+        "non_alerts": non_alerts,
+        "checkpoint": checkpoint,
+        "scan_interrupted": interrupted,
         "links_found": len(jobs),
         "truncated": fetch_messages and checked < available,
         "jobs": list(jobs.values()),
@@ -575,7 +693,7 @@ def _email_scan(config: dict, *, fetch_messages: bool) -> dict:
         with _email_lock:
             _email_result.update(state="error", message=str(exc))
         raise
-    summary = {key: value for key, value in result.items() if key != "jobs"}
+    summary = {key: value for key, value in result.items() if key not in {"jobs", "checkpoint"}}
     summary["message"] = (
         f"Checked {result['messages_checked']} recent messages and found {result['links_found']} job links."
         if fetch_messages
@@ -590,10 +708,6 @@ def _email_scan(config: dict, *, fetch_messages: bool) -> dict:
 def get_last_email_result() -> dict:
     with _email_lock:
         return dict(_email_result)
-
-
-def _imap_jobs(config: dict) -> list[dict]:
-    return sync_email(config)["jobs"]
 
 
 # A denied source is paused across scheduled scans; no proxy or challenge bypass.
@@ -1035,18 +1149,6 @@ def discover(settings: dict, profile: dict) -> list[dict]:
             )
         if source == "linkedin":
             state["details_mode"] = "listing_cards"
-    email_config = settings.get("email") or {}
-    if email_config.get("enabled"):
-        state = summary("email")
-        try:
-            for job in _imap_jobs(email_config):
-                add_job(job, state)
-        except Exception as exc:
-            state.update(
-                status="error",
-                message="Email job alerts could not be read.",
-                note=f"{type(exc).__name__}: {str(exc)[:240]}",
-            )
     with _errors_lock:
         _errors[:] = [
             dict(state, note=state.get("note") or state["message"])
