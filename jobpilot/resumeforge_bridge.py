@@ -185,9 +185,25 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
     draft_path = workspace / "draft.json"
     if draft_path.exists():
         draft = json.loads(draft_path.read_text(encoding="utf-8"))
+        changed = False
         if not draft.get("job_company") or not draft.get("job_title"):
             draft["job_company"] = posting_company(job)
             draft["job_title"] = str(job.get("title") or "")
+            changed = True
+        if not draft.get("last_run"):
+            try:
+                result = checked_run(workspace)
+                if result["status"] in {"needs_content", "needs_review"}:
+                    preview = _inside(
+                        workspace / "runs" / result["run_id"] / "preview.pdf", workspace
+                    )
+                    if preview.is_file():
+                        draft["last_run"] = result["run_id"]
+                        changed = True
+            except (OSError, ValueError):
+                # A damaged previous run must not prevent opening the editor.
+                pass
+        if changed:
             _atomic_json(draft_path, draft)
         return workspace
     source = (Path(master_dir) if master_dir is not None else master_workspace()) / "draft.json"
@@ -270,7 +286,9 @@ def build_resume(data_dir: Path, job: dict) -> dict:
     from resumeforge.models import ModelSettings, Profile, RunRequest
 
     workspace = prepare_workspace(data_dir, job)
-    draft = json.loads((workspace / "draft.json").read_text(encoding="utf-8"))
+    draft_path = workspace / "draft.json"
+    saved_input = draft_path.read_bytes()
+    draft = json.loads(saved_input)
     request = RunRequest(
         profile=Profile.model_validate(draft["profile"]),
         settings=ModelSettings.model_validate(draft["settings"]),
@@ -286,12 +304,18 @@ def build_resume(data_dir: Path, job: dict) -> dict:
     )
     run_dir = workspace / "runs" / uuid4().hex
     result = run(request, run_dir)
-    if result["status"] != "ready":
-        return {"status": result["status"], "workspace": workspace.name}
-    destination = resume_destination(data_dir, job)
-    export_checked(run_dir, destination)
-    draft["last_run"] = run_dir.name
-    _atomic_json(workspace / "draft.json", draft)
+    if draft_path.read_bytes() != saved_input:
+        return {"status": "needs_review", "workspace": workspace.name}
+    status = result["status"]
+    if status == "ready":
+        destination = resume_destination(data_dir, job)
+        export_checked(run_dir, destination)
+    if status == "ready" or (run_dir / "preview.pdf").is_file():
+        # The editor can reopen a preview even when the check withheld export.
+        draft["last_run"] = run_dir.name
+        _atomic_json(draft_path, draft)
+    if status != "ready":
+        return {"status": status, "workspace": workspace.name}
     return {
         "status": "ready",
         "path": str(destination),

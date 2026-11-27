@@ -93,7 +93,7 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                 assert b"Chrome autofill" in request("/", binary_response=True)
                 token = request("/api/session")["token"]
                 dashboard_headers = {"X-JobPilot-Token": token}
-                request(
+                imported = request(
                     "/api/import",
                     {
                         "title": "Platform Engineer",
@@ -103,16 +103,17 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                     },
                     dashboard_headers,
                 )
-                job_id = request("/api/state")["jobs"][0]["id"]
-                request(f"/api/jobs/{job_id}/prepare", {}, dashboard_headers)
+                job = imported["jobs"][0]
+                assert job["fit"] == 80, "The fixture must exercise the exact auto-build threshold"
+                job_id = job["id"]
                 deadline = time.monotonic() + 180
                 while True:
-                    job = request("/api/state")["jobs"][0]
+                    job = next(j for j in request("/api/state")["jobs"] if j["id"] == job_id)
                     if job.get("documents", {}).get("resumeforge_pdf"):
                         break
                     if time.monotonic() >= deadline:
                         raise RuntimeError(
-                            f"Frozen ResumeForge preparation did not complete: {job}"
+                            f"Frozen automatic ResumeForge preparation did not complete: {job}"
                         )
                     time.sleep(0.5)
                 assert not job["documents"].get("resumeforge_cover_pdf")
@@ -137,6 +138,7 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                     "frozen_service": True,
                     "fictional_profile": True,
                     "documents": True,
+                    "automatic_resume_at_80": True,
                     "extension_api": True,
                     "gui": False,
                 }

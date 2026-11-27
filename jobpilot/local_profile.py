@@ -46,6 +46,8 @@ def read_local_profile(master_dir: Path) -> dict | None:
     name = str(source.get("name") or "").strip()
     if not name or name.casefold() in {"morgan example", "jordan morgan"}:
         return None
+    if any(not isinstance(source.get(key, []), list) for key in ("roles", "skills", "education")):
+        return None
 
     contact = str(source.get("contact") or "")
     segments = [part.strip() for part in contact.split("|") if part.strip()]
@@ -77,6 +79,8 @@ def read_local_profile(master_dir: Path) -> dict | None:
     for role in source.get("roles", []):
         if not isinstance(role, dict) or not role.get("company") or not role.get("title"):
             continue
+        if not isinstance(role.get("bullets", []), list):
+            return None
         facts = []
         for bullet in role.get("bullets", []):
             if isinstance(bullet, dict) and bullet.get("id") and bullet.get("text"):

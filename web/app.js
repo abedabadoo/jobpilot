@@ -907,30 +907,31 @@
   async function poll() {
     if (polling) return;
     polling = true;
+    const request = new AbortController();
+    const timeout = setTimeout(() => request.abort(), 10000);
     try {
-      const [response, issues] = await Promise.all([
-        fetch('/api/state', { cache: 'no-store' }),
-        fetch('/api/problems', { cache: 'no-store' }).catch(() => null),
-      ]);
+      const response = await fetch('/api/state', { cache: 'no-store', signal: request.signal });
       if (!response.ok) throw new Error('The local service is unavailable.');
       const result = await response.json();
       if (!result || !Array.isArray(result.jobs))
         throw new Error('Dashboard data is not ready yet.');
       state = result;
       connected = true;
-      try {
-        const data = issues?.ok ? await issues.json() : null;
-        problemsAvailable = Array.isArray(data?.problems);
-        if (problemsAvailable) problemItems = data.problems;
-      } catch (_) {
-        problemsAvailable = false;
-      }
+      problemsAvailable = Array.isArray(result.problems);
+      if (problemsAvailable) problemItems = result.problems;
       $('connectionDot').className = 'dot teal';
       $('connectionLabel').textContent = 'Local service connected';
-      $('serviceBanner').hidden = true;
-      $('lastUpdated').textContent =
-        `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date())}`;
-      render();
+      try {
+        render();
+        $('lastUpdated').textContent =
+          `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date())}`;
+        $('serviceBanner').hidden = true;
+      } catch (error) {
+        console.error('JobPilot dashboard could not render the latest data.', error);
+        $('serviceBanner').hidden = false;
+        $('serviceBanner').textContent =
+          'JobPilot is connected, but the dashboard could not display the latest update. It will retry automatically.';
+      }
     } catch (_) {
       connected = false;
       $('connectionDot').className = 'dot amber';
@@ -945,6 +946,7 @@
       $('monitorDot').className = 'dot amber';
       renderNextSearch();
     } finally {
+      clearTimeout(timeout);
       polling = false;
     }
   }

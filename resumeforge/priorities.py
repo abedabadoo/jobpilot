@@ -230,7 +230,16 @@ _HEADINGS = {
     "preferred": r"(?:preferred|desirable|desired(?:\s+skills?\s*/\s*certifications?)?|additional|bonus|nice[- ]to[- ]have|good[- ]to[- ]have)(?: qualifications?| requirements?| skills?| experience|s)?",
     "required": r"(?:required|minimum|essential|basic)(?: qualifications?| requirements?| skills?(?:\s*(?:&|and|/)\s*qualifications?)?| experience)?|requirements?|what you(?:'|’)ll need|what you bring|you should have|must[- ]have(?: technical/functional skills)?|qualifications",
     "duties": r"(?:key |primary |core |essential )?(?:responsibilities|duties)|what you(?:'|’)ll do|where you(?:'|’)ll make an impact|about (?:the|this) (?:role|job|position)|the role|your impact",
-    "ignore": r"salary(?: range)?|compensation(?: and benefits)?|benefits|equal (?:employment )?opportunity(?: employer)?|commitment to equal opportunity|global data privacy notice|data privacy notice|privacy notice|privacy policy|about (?:us|the company)|how to apply|how we work|why this role is special|the team|who we are|our (?:company|organization)|physical demands|work environment|legal notices?|(?:california|washington|colorado|illinois|new york city) pay range|#?li-[a-z0-9-]+",
+    "ignore": (
+        r"(?:(?:target|expected|base|estimated) )?(?:salary|pay)(?: range)?"
+        r"|compensation(?: and benefits)?|benefits|equal (?:employment )?opportunity(?: employer)?"
+        r"|commitment to equal opportunity|(?:global )?(?:data )?privacy (?:notice|policy)"
+        r"|(?:candidate|applicant) (?:ai|artificial intelligence)(?: (?:use|usage))? policy"
+        r"|about (?:us|the company)|how to apply|how we work|why this role is special"
+        r"|the team|who we are|our (?:company|organization)|physical demands|work environment"
+        r"|legal notices?|(?:california|washington|colorado|illinois|new york city) pay range"
+        r"|#?li-[a-z0-9-]+"
+    ),
 }
 _EXAMPLES = re.compile(r"\b(?:such as|e\.g\.|tools? (?:like|including)|one of|any of|such tools as)\b", re.I)
 _PREFERRED = re.compile(r"\b(?:preferred|desirable|nice[- ]to[- ]have|good[- ]to[- ]have|bonus|a plus)\b", re.I)
@@ -267,8 +276,9 @@ def passages(job):
             bool(re.search(r"\b(?:engineer|developer|analyst|designer|manager|coordinator|devops|architect|nurse|specialist|director|accountant|technician|scientist|officer|lead)\b", line, re.I))
             and not bool(re.match(r"(we|the ideal|you|our|must|seeking)\b", line, re.I)))
         for sent in re.split(r"[;]|(?<!\be\.g)(?<=[.!?])\s+", line):
-            if sent.strip():
-                rows.append(Passage(sent.strip().rstrip("."), section, title))
+            sent = sent.strip().rstrip(".")
+            if sent and not re.match(r"please contact (?:us|our recruiting team)\b", sent, re.I):
+                rows.append(Passage(sent, section, title))
     return rows
 
 

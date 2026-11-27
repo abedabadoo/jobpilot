@@ -122,6 +122,40 @@ def test_automatic_build_lets_resumeforge_rank_full_posting(tmp_path, monkeypatc
     assert "Linux, Incident response" not in request.job_description
 
 
+def test_reopening_an_existing_held_run_restores_its_preview(tmp_path):
+    master = tmp_path / "master"
+    master_draft(master)
+    data = tmp_path / "data"
+    workspace = bridge.prepare_workspace(data, role(), master_dir=master)
+    run_id = "c" * 32
+    folder = run_result(workspace, run_id, status="needs_content")
+    (folder / "preview.pdf").write_bytes(b"%PDF-1.4\nfictional preview\n")
+
+    assert bridge.prepare_workspace(data, role(), master_dir=master) == workspace
+    assert json.loads((workspace / "draft.json").read_text())["last_run"] == run_id
+    assert bridge.checked_run(workspace)["status"] == "needs_content"
+
+
+def test_automatic_run_does_not_export_after_editor_saves_new_input(tmp_path, monkeypatch):
+    from resumeforge import engine
+
+    master = tmp_path / "master"
+    master_draft(master)
+    data = tmp_path / "data"
+    job = role()
+    workspace = bridge.prepare_workspace(data, job, master_dir=master)
+    draft_path = workspace / "draft.json"
+    edited = {**json.loads(draft_path.read_text()), "edit_request": "New instructions"}
+
+    def run(*_):
+        draft_path.write_text(json.dumps(edited), encoding="utf-8")
+        return {"status": "ready"}
+
+    monkeypatch.setattr(engine, "run", run)
+    assert bridge.build_resume(data, job)["status"] == "needs_review"
+    assert json.loads(draft_path.read_text()) == edited
+
+
 def test_role_workspace_needs_a_real_posting_and_saved_profile(tmp_path):
     source = tmp_path / "master"
     master_draft(source)

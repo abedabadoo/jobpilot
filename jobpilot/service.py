@@ -5,9 +5,11 @@ import csv
 import ctypes
 import io
 import json
+import logging
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import threading
 import time
@@ -77,16 +79,6 @@ DEFAULTS = {
 for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]:
     if store.get(key) is None:
         store.set(key, default)
-# Personal builds import from the user's local saved ResumeForge source only.
-# The shared repository's fictional candidate.json remains unchanged.
-if os.environ.get("JOBPILOT_TESTING") != "1":
-    adopt_local_profile(
-        store,
-        resumeforge_bridge.master_workspace(),
-        score_job,
-        {**DEFAULTS, **(store.get("settings", {}) or {})},
-    )
-
 stored_preferences = store.get("settings", {})
 if (
     os.environ.get("JOBPILOT_COMBINED") == "1"
@@ -590,7 +582,7 @@ def prepare_job(job_id, preserve_review=False):
             note="ResumeForge is building the tailored resume.",
         )
         try:
-            result = resumeforge_bridge.build_resume(DATA, {**job, "keywords": job_keywords(job)})
+            result = resumeforge_bridge.build_resume(DATA, job)
             if result["status"] == "ready":
                 documents = {"resumeforge_pdf": result["path"]}
                 current = store.get_job(job_id)
@@ -942,14 +934,21 @@ def process_document_queue():
 
 
 def application_loop():
+    next_profile_check = 0.0
     while not stop_event.wait(2):
-        if store.get("profile", {}).get("sample_profile") is True:
-            adopt_local_profile(
-                store,
-                resumeforge_bridge.master_workspace(),
-                score_job,
-                settings(),
-            )
+        now = time.monotonic()
+        if now >= next_profile_check and os.environ.get("JOBPILOT_TESTING") != "1":
+            next_profile_check = now + 10
+            try:
+                with store.lock:
+                    adopt_local_profile(
+                        store, resumeforge_bridge.master_workspace(), score_job, settings()
+                    )
+            except (OSError, sqlite3.OperationalError):
+                # The saved profile is committed only after rescoring. A transient
+                # error can be retried without taking the dashboard or queue down.
+                logging.exception("ResumeForge profile import could not finish; will retry")
+                continue
         # Resume creation is independent of the deprecated application-mode
         # switch. Every eligible role is handled by the same serialized
         # ResumeForge queue, while form submission remains disabled in assist
@@ -1843,9 +1842,7 @@ def open_in_resumeforge(job_id: int):
     job = require_job(job_id)
     try:
         executable = resumeforge_bridge.desktop_executable()
-        workspace = resumeforge_bridge.prepare_workspace(
-            DATA, {**job, "keywords": job_keywords(job)}
-        )
+        workspace = resumeforge_bridge.prepare_workspace(DATA, job)
         resumeforge_bridge.open_editor(executable, workspace)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
