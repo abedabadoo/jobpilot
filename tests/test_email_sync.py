@@ -1,6 +1,11 @@
+import json
+import time
 from email.message import EmailMessage
+from pathlib import Path
 
 import pytest
+from pypdf import PdfReader
+from test_api import api
 
 from jobpilot import collectors
 
@@ -76,6 +81,96 @@ def test_gmail_sync_is_read_only_counts_messages_and_deduplicates_links(mailbox)
     assert all(call[-1].startswith("(BODY.PEEK[") for call in mailbox if call[0] == "fetch")
     assert mailbox[0][2]["ssl_context"].check_hostname
     assert result["checkpoint"] == {"validity": 10, "uid": 2}
+
+
+def test_verified_gmail_alert_builds_only_a_checked_resume(
+    tmp_path, monkeypatch, mailbox, messages
+):
+    client = api(tmp_path / "data", monkeypatch)
+    from jobpilot import resumeforge_bridge, service
+
+    description = (
+        "Build AWS infrastructure as code and automated test environments. Own CI/CD pipelines "
+        "with GitHub Actions, implement production monitoring and incident response, and build "
+        "Python utilities and REST APIs to improve release reliability."
+    )
+    posting = "https://job-boards.greenhouse.io/signalorchard/jobs/12345"
+    mail = EmailMessage()
+    mail["Subject"] = "Your job alert: Platform Engineer at Signal Orchard Studio"
+    mail.set_content(f"Platform Engineer at Signal Orchard Studio\n{posting}")
+    messages.update({1: mail.as_bytes(), 2: mail.as_bytes()})
+
+    def public_posting(url):
+        assert (
+            url
+            == "https://boards-api.greenhouse.io/v1/boards/signalorchard/jobs/12345?pay_transparency=true"
+        )
+        return json.dumps(
+            {
+                "id": 12345,
+                "title": "Platform Engineer",
+                "company_name": "Signal Orchard Studio",
+                "location": {"name": "Cincinnati, OH"},
+                "content": f"<p>{description}</p>",
+            }
+        ), url
+
+    monkeypatch.setattr(collectors, "_get_public", public_posting)
+    service.store.set(
+        "settings",
+        {
+            **service.settings(),
+            "email": {"username": "fixture@example.invalid", "enabled": True},
+            "target_roles": ["Platform Engineer"],
+            "location": "Cincinnati, OH",
+        },
+    )
+    service.store.set(
+        "profile",
+        {
+            **service.store.get("profile"),
+            "skills": ["AWS", "GitHub Actions", "Python", "incident response"],
+        },
+    )
+    source = Path(resumeforge_bridge.__file__).parents[1] / "resumeforge/data/abu.profile.json"
+    profile = json.loads(source.read_text(encoding="utf-8"))
+    profile["name"] = "Fictional QA Candidate"
+    master = tmp_path / "master"
+    master.mkdir()
+    (master / "draft.json").write_text(
+        json.dumps({"profile": profile, "settings": {"provider": "none"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(resumeforge_bridge, "master_workspace", lambda: master)
+    monkeypatch.setattr(
+        resumeforge_bridge, "downloads_folder", lambda job: service.DATA / "applications"
+    )
+
+    headers = {"X-JobPilot-Token": client.get("/api/session").json()["token"]}
+    assert client.post("/api/email/sync", headers=headers, json={}).status_code == 202
+    deadline = time.monotonic() + 10
+    while service.email_task_running.is_set() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    status = client.get("/api/email/status").json()
+    assert status["state"] == "connected"
+    assert status["messages_checked"] == 2 and status["imported"] == status["researched"] == 1
+    assert service.store.get("_email_checkpoint")["cursor"] == {"validity": 10, "uid": 2}
+    assert ("select", "INBOX", True) in mailbox
+    (job,) = service.store.jobs()
+    assert job["posting_source"] == "greenhouse"
+    assert job["description"] == description and job["fit"] == 80
+    assert not service._automatic_resume_due({**job, "fit": 79})
+
+    service.process_document_queue()
+    job = service.store.get_job(job["id"])
+    assert job["resumeforge"]["status"] == "ready"
+    assert set(job["documents"]) == {"resumeforge_pdf"}
+    pdf = Path(job["documents"]["resumeforge_pdf"])
+    assert list(pdf.parent.glob("*.pdf")) == [pdf]
+    (page,) = PdfReader(pdf).pages
+    contents = page.extract_text()
+    assert "Fictional QA Candidate" in contents and "AWS" in contents
+    assert not service._automatic_resume_due(job)
 
 
 def test_incremental_scan_reads_new_headers_and_retries_a_failed_uid(mailbox, messages):
