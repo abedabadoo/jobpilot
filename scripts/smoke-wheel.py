@@ -10,6 +10,7 @@ from pathlib import Path
 PROBE = r"""
 import os
 import sys
+import json
 from pathlib import Path
 
 import jobpilot
@@ -26,6 +27,14 @@ assert package.is_relative_to(target), f"Imported outside wheel target: {package
 assert Path(service.__file__).resolve().is_relative_to(target)
 assert service.DATA == data, "Service did not use isolated smoke data"
 assert os.environ["JOBPILOT_TESTING"] == "1"
+
+forge = package.parent / "resumeforge"
+sample = json.loads((forge / "data/abu.profile.json").read_text(encoding="utf-8"))
+assert sample["name"] == "Morgan Example"
+assert str(sample.get("contact", "")).endswith("example.invalid/morgan")
+assert (forge / "data/risk-guard.json").is_file()
+assert (forge / "fonts/LiberationSans-Regular.ttf").stat().st_size > 1000
+assert "commit " in (forge / "VENDORED_FROM").read_text(encoding="utf-8")
 
 for name in ("web", "remote_web"):
     assert asset_directory(name).is_relative_to(package), f"Unbundled {name} assets"
@@ -95,7 +104,7 @@ try:
 finally:
     portal.close()
 
-print("Wheel smoke passed: isolated import, fictional paused profile, dashboard and portal assets.")
+print("Wheel smoke passed: isolated import, fictional assets, ResumeForge resources, dashboard and portal.")
 """
 
 

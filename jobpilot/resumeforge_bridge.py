@@ -15,6 +15,7 @@ from pathlib import Path
 _RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
 _MAX_REPORT_BYTES = 5 * 1024 * 1024
 _MAX_PDF_BYTES = 15 * 1024 * 1024
+_MAX_MASTER_DRAFT_BYTES = 10 * 1024 * 1024
 _STALLED_RUN_NS = 30 * 60 * 1_000_000_000
 
 
@@ -28,6 +29,20 @@ def master_workspace() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / (
         "ResumeForge/workspace"
     )
+
+
+def master_revision() -> str:
+    """Return a stable revision for the saved master draft, or an empty value."""
+    draft = master_workspace() / "draft.json"
+    try:
+        if draft.is_symlink() or not draft.is_file():
+            return ""
+        size = draft.stat().st_size
+        if not 2 <= size <= _MAX_MASTER_DRAFT_BYTES:
+            return ""
+        return hashlib.sha256(draft.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def windows_install_dir() -> Path | None:
@@ -44,6 +59,9 @@ def windows_install_dir() -> Path | None:
 
 
 def desktop_executable() -> Path:
+    combined = os.environ.get("JOBPILOT_DESKTOP_EXE")
+    if combined and Path(combined).is_file():
+        return Path(combined).resolve()
     override = os.environ.get("RESUMEFORGE_DESKTOP_EXE")
     if override:
         candidates = [Path(override)]
@@ -120,11 +138,19 @@ def validate_import_directory(data_dir: Path, folder: Path) -> None:
 def checked_copy(path: str, digest: str, data_dir: Path) -> bool:
     candidate = Path(path)
     applications = Path(data_dir) / "applications"
+    downloads = Path.home() / "Downloads" / "JobPilot RF Docs"
     try:
         return (
             not applications.is_symlink()
+            and not applications.is_junction()
+            and not downloads.is_symlink()
+            and not downloads.is_junction()
             and not candidate.is_symlink()
-            and candidate.resolve().is_relative_to(applications.resolve())
+            and not candidate.is_junction()
+            and (
+                candidate.resolve().is_relative_to(applications.resolve())
+                or candidate.resolve().is_relative_to(downloads.resolve())
+            )
             and candidate.is_file()
             and 5 <= candidate.stat().st_size <= _MAX_PDF_BYTES
             and hashlib.sha256(candidate.read_bytes()).hexdigest() == digest
@@ -158,6 +184,30 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
     validate_workspace(data_dir, workspace)
     draft_path = workspace / "draft.json"
     if draft_path.exists():
+        draft = json.loads(draft_path.read_text(encoding="utf-8"))
+        changed = False
+        if not draft.get("job_posting_url"):
+            draft["job_posting_url"] = _posting_url(job)
+            changed = True
+        if not draft.get("job_company") or not draft.get("job_title"):
+            draft["job_company"] = posting_company(job)
+            draft["job_title"] = str(job.get("title") or "")
+            changed = True
+        if not draft.get("last_run"):
+            try:
+                result = checked_run(workspace)
+                if result["status"] in {"needs_content", "needs_review"}:
+                    preview = _inside(
+                        workspace / "runs" / result["run_id"] / "preview.pdf", workspace
+                    )
+                    if preview.is_file():
+                        draft["last_run"] = result["run_id"]
+                        changed = True
+            except (OSError, ValueError):
+                # A damaged previous run must not prevent opening the editor.
+                pass
+        if changed:
+            _atomic_json(draft_path, draft)
         return workspace
     source = (Path(master_dir) if master_dir is not None else master_workspace()) / "draft.json"
     if not source.is_file():
@@ -170,16 +220,12 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
     if (
         not isinstance(profile, dict)
         or not profile.get("name")
+        or profile.get("name") == "Morgan Example"
         or not isinstance(profile.get("roles"), list)
         or not profile["roles"]
         or not isinstance(settings, dict)
     ):
         raise ValueError("Save a complete profile and model settings in ResumeForge first.")
-    raw_keywords = job.get("keywords") or {}
-    terms = raw_keywords.get("terms", []) if isinstance(raw_keywords, dict) else []
-    keywords = ", ".join(
-        dict.fromkeys(str(term).strip() for term in terms[:100] if str(term).strip())
-    )
     draft = {
         "version": 2,
         "analyzed": False,
@@ -188,19 +234,132 @@ def prepare_workspace(data_dir: Path, job: dict, *, master_dir: Path | None = No
         "settings": settings,
         "job_description": _job_description(job),
         "edit_request": "",
-        "keywords": keywords,
+        "keywords": "",  # Preserve ResumeForge’s own posting analysis.
+        "job_company": posting_company(job),
+        "job_title": str(job.get("title") or ""),
+        "job_posting_url": _posting_url(job),
     }
     _atomic_json(draft_path, draft)
     return workspace
 
 
 def open_editor(executable: Path, workspace: Path) -> None:
+    combined = executable.name.lower().startswith("jobpilot")
     subprocess.Popen(
-        [str(executable), "--data-dir", str(workspace)],
+        [
+            str(executable),
+            *(["--resumeforge-child"] if combined else []),
+            "--data-dir",
+            str(workspace),
+        ],
         cwd=str(executable.parent),
         shell=False,
         close_fds=True,
     )
+
+
+def posting_company(job: dict) -> str:
+    return str(job.get("company") or "Employer").strip()
+
+
+def _posting_url(job: dict) -> str:
+    from .collectors import _alert_destination
+
+    return _alert_destination(str(job.get("apply_url") or job.get("url") or ""))
+
+
+def downloads_folder(job: dict) -> Path:
+    from resumeforge.cover_letter import role_folder
+
+    return role_folder(posting_company(job), str(job.get("title") or "Role"))
+
+
+def resume_destination(data_dir: Path, job: dict) -> Path:
+    """Return a friendly filename in a posting-specific export directory."""
+    from resumeforge.cover_letter import posting_subfolder
+    from resumeforge.cover_workflow import RESUME_NAME
+
+    return (
+        posting_subfolder(downloads_folder(job), workspace_path(data_dir, job).name) / RESUME_NAME
+    )
+
+
+def cover_workspace(data_dir: Path, job: dict):
+    from resumeforge.cover_workflow import LetterWorkspace
+    from resumeforge.desktop_support import load_draft
+    from resumeforge.models import ModelSettings
+
+    workspace = workspace_path(data_dir, job)
+    validate_workspace(data_dir, workspace)
+    checked = checked_run(workspace)
+    if checked["status"] != "ready":
+        raise ValueError("Build and check a ResumeForge resume for this role first.")
+    saved = load_draft(workspace) or {}
+    return LetterWorkspace(
+        workspace,
+        checked["pdf"].parent,
+        resume_destination(data_dir, job),
+        posting_company(job),
+        str(job.get("title") or ""),
+        _job_description(job),
+        ModelSettings.model_validate(saved.get("settings") or {}),
+        _posting_url(job),
+        fast_default=True,
+    )
+
+
+def build_resume(data_dir: Path, job: dict) -> dict:
+    """Run the bundled ResumeForge engine; a cover letter requires a separate UI action."""
+    from uuid import uuid4
+
+    from resumeforge.desktop_support import export_checked
+    from resumeforge.engine import run
+    from resumeforge.models import ModelSettings, Profile, RunRequest
+
+    workspace = prepare_workspace(data_dir, job)
+    draft_path = workspace / "draft.json"
+    saved_input = draft_path.read_bytes()
+    draft = json.loads(saved_input)
+    # Match the editor's Generate new example achievements mode for unattended
+    # builds. The user's master profile and per-role editing preferences stay
+    # in the saved draft.
+    settings = ModelSettings.model_validate(draft["settings"]).model_copy(
+        update={"draft_mode": "inspiration", "wording_policy": "rewrite"}
+    )
+    request = RunRequest(
+        profile=Profile.model_validate(draft["profile"]),
+        settings=settings,
+        job_description=draft["job_description"],
+        # JobPilot's keyword list is a fast lexical summary for the dashboard,
+        # not a set the user reviewed. Passing it as reviewed priorities skips
+        # ResumeForge's contextual posting analysis and can make generic tools
+        # outrank the role's actual responsibilities. Automatic runs therefore
+        # analyze the full posting themselves. Priorities become reviewed only
+        # after the user confirms them in the ResumeForge editor.
+        keywords=[],
+        reviewed_priorities=None,
+    )
+    run_dir = workspace / "runs" / uuid4().hex
+    result = run(request, run_dir)
+    if draft_path.read_bytes() != saved_input:
+        return {"status": "needs_review", "workspace": workspace.name}
+    status = result["status"]
+    if status == "ready":
+        destination = resume_destination(data_dir, job)
+        export_checked(run_dir, destination)
+    if status == "ready" or (run_dir / "preview.pdf").is_file():
+        # The editor can reopen a preview even when the check withheld export.
+        draft["last_run"] = run_dir.name
+        _atomic_json(draft_path, draft)
+    if status != "ready":
+        return {"status": status, "workspace": workspace.name}
+    return {
+        "status": "ready",
+        "path": str(destination),
+        "workspace": workspace.name,
+        "run_id": run_dir.name,
+        "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+    }
 
 
 def _inside(path: Path, root: Path) -> Path:

@@ -5,10 +5,11 @@ import csv
 import ctypes
 import io
 import json
+import logging
 import os
 import re
 import secrets
-import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -19,7 +20,6 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -27,17 +27,14 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, resumeforge_bridge
 from .assets import asset_directory
+from .autofill import ExtensionAPI
 from .core import canonical_url, eligibility, facts_map, role_assessment, score_job
-from .documents import local_endpoint, prepare
-from .remote_runtime import RemoteRuntime
+from .local_profile import adopt_local_profile
+from .platforms import SystemSleepInhibitor, application_data_dir
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = Path(
-    os.environ.get(
-        "JOBPILOT_DATA_DIR", str(Path(os.environ.get("LOCALAPPDATA", ROOT)) / "JobPilot")
-    )
-).resolve()
+DATA = application_data_dir()
 DATA.mkdir(parents=True, exist_ok=True)
 store = Store(DATA / "jobpilot.sqlite")
 seed = json.loads((ROOT / "jobpilot/candidate.json").read_text(encoding="utf-8"))
@@ -47,7 +44,14 @@ DEFAULTS = {
         "Cloud Security Engineer",
         "Information Security Analyst",
         "GRC Analyst",
+        "GRC Engineer",
         "Security Analyst",
+        "SOC Analyst",
+        "Security Advisor",
+        "DevOps Engineer",
+        "Cloud Engineer",
+        "Platform Engineer",
+        "Forward Deployed Engineer",
     ],
     "location": "Cincinnati, OH",
     "remote": True,
@@ -60,21 +64,26 @@ DEFAULTS = {
     "startup": False,
     "remote_intervention_enabled": False,
     "intervention_timeout_seconds": 28800,
-    "ollama_url": "http://127.0.0.1:11436",
-    "model": "qwen3.5:9b",
-    "sources": ["linkedin", "indeed"],
-    "results_per_source": 12,
-    "hours_old": 168,
+    "sources": ["indeed"],
+    "results_per_source": 50,
+    "hours_old": 72,
+    "greenhouse_discovery": True,
     "ats_boards": [
         {"source": "greenhouse", "board": "cloudflare"},
         {"source": "greenhouse", "board": "datadog"},
+        {"source": "greenhouse", "board": "cobaltio"},
+        {"source": "greenhouse", "board": "guidepointsecurity"},
+        {"source": "greenhouse", "board": "calahealth"},
     ],
 }
 for key, default in [("settings", DEFAULTS), ("profile", seed), ("answers", {})]:
     if store.get(key) is None:
         store.set(key, default)
 stored_preferences = store.get("settings", {})
-if stored_preferences.get("application_mode") != "legacy":
+if (
+    os.environ.get("JOBPILOT_COMBINED") == "1"
+    or stored_preferences.get("application_mode") != "legacy"
+):
     stored_preferences.update(
         application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
     )
@@ -84,7 +93,53 @@ if os.environ.get("JOBPILOT_DESKTOP_EXE"):
 TOKEN = store.get("_session_token") or secrets.token_urlsafe(32)
 store.set("_session_token", TOKEN)
 stop_event = threading.Event()
-remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
+sleep_inhibitor = SystemSleepInhibitor()
+
+
+class _CombinedRemoteBroker:
+    def list_cases(self):
+        return []
+
+    def pause(self, *_args, **_kwargs):
+        raise RuntimeError("Remote application control is unavailable in the combined app.")
+
+
+class _CombinedRemoteRuntime:
+    """Small disabled facade for builds that never ship browser automation."""
+
+    auth = None
+
+    def __init__(self):
+        self.broker = _CombinedRemoteBroker()
+
+    def status(self):
+        return {
+            "starting": False,
+            "listening": False,
+            "error": "",
+            "gateway": {"running": False, "url": "", "error": ""},
+            "waiting": 0,
+            "notifications": {"subscribed_devices": 0},
+        }
+
+    def start_async(self):
+        return None
+
+    def stop(self):
+        return None
+
+    def pairing_link(self):
+        return ""
+
+
+if os.environ.get("JOBPILOT_COMBINED") == "1":
+    remote_runtime = _CombinedRemoteRuntime()
+else:
+    # Kept for source-only legacy regression coverage. Native combined builds
+    # exclude this optional browser-control stack entirely.
+    from .remote_runtime import RemoteRuntime
+
+    remote_runtime = RemoteRuntime(DATA, stop_event, vapid_subject="mailto:" + seed["email"])
 search_requested = threading.Event()
 discovery_lock = threading.Lock()
 application_lock = threading.RLock()
@@ -100,14 +155,29 @@ worker = {
     "current": None,
     "last_search": store.get("last_search"),
     "last_error": None,
-    "model_status": "Checking local model",
     "email_status": "Not configured",
 }
+
+AUTO_RESUME_MIN_FIT = 80.0
+AUTO_RESUME_MAX_RETRIES = 3
+AUTO_RESUME_RETRY_BASE_SECONDS = 30
+
+
+def _resume_attempt_count(value) -> int:
+    """Normalize persisted retry state so a damaged row cannot stop the queue."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def settings():
     conf = {**DEFAULTS, **store.get("settings", {}), "data_dir": str(DATA)}
-    if conf.get("application_mode") != "legacy":
+    try:
+        conf["min_fit"] = max(0, min(int(AUTO_RESUME_MIN_FIT), int(conf["min_fit"])))
+    except (KeyError, TypeError, ValueError):
+        conf["min_fit"] = DEFAULTS["min_fit"]
+    if os.environ.get("JOBPILOT_COMBINED") == "1" or conf.get("application_mode") != "legacy":
         conf.update(
             application_mode="assist", submission_enabled=False, remote_intervention_enabled=False
         )
@@ -185,6 +255,9 @@ def classify_job(job, profile, conf):
         "alert_received_at",
         "alert_from",
         "alert_metadata_version",
+        "alert_title_source",
+        "posting_source",
+        "alert_research",
     }
     job = {k: v for k, v in job.items() if k in fields}
     job["status"] = "queued"
@@ -276,8 +349,10 @@ def discover_once():
     conf = settings()
     conf["search_titles"] = conf["target_roles"]
     conf["locations"] = [conf["location"]]
+    conf["_greenhouse_cursor"] = store.get("greenhouse_cursor", 0)
+    conf["_greenhouse_learned_boards"] = store.get("greenhouse_learned_boards", [])
+    conf["_search_title_cursor"] = store.get("search_title_cursor", 0)
     profile = store.get("profile")
-    email_revision = store.get("_email_config_revision", 0)
     count_keys = ["checked", "imported", "existing", "filtered", "removed"]
     source_rows = {}
     result = {"status": "ok"}
@@ -295,6 +370,36 @@ def discover_once():
 
     try:
         existing_jobs = store.jobs()
+        fit_signature = sha256(
+            json.dumps(
+                {
+                    "version": 2,
+                    "roles": conf["target_roles"],
+                    "skills": profile.get("skills", []),
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        if store.get("fit_scoring_signature") != fit_signature:
+            for existing in existing_jobs:
+                if (
+                    existing.get("status") in ("queued", "needs_review", "review_required")
+                    and len(str(existing.get("description", ""))) >= 80
+                ):
+                    updated_fit = score_job(existing, profile, conf)
+                    if updated_fit != existing.get("fit"):
+                        store.update_job(existing["id"], fit=updated_fit)
+            store.set("fit_scoring_signature", fit_signature)
+            existing_jobs = store.jobs()
+        known_greenhouse = set(conf["_greenhouse_learned_boards"])
+        for existing in existing_jobs:
+            for route in ("url", "source_url", "apply_url"):
+                slug = collectors._greenhouse_slug(existing.get(route))
+                if slug:
+                    known_greenhouse.add(slug)
+        conf["_greenhouse_learned_boards"] = sorted(known_greenhouse)
+        if len(known_greenhouse) > len(store.get("greenhouse_learned_boards", [])):
+            store.set("greenhouse_learned_boards", conf["_greenhouse_learned_boards"])
         existing_ids = {job["id"] for job in existing_jobs}
         email_routes = {
             canonical_url(existing[key])
@@ -326,6 +431,16 @@ def discover_once():
             else:
                 row["existing"] += 1
         details = getattr(collectors, "get_last_search_result", lambda: {})()
+        if details.get("greenhouse_next_cursor") is not None:
+            store.set("greenhouse_cursor", details["greenhouse_next_cursor"])
+        if details.get("search_title_next_cursor") is not None:
+            store.set("search_title_cursor", details["search_title_next_cursor"])
+        learned = details.get("greenhouse_learned_boards") or []
+        if learned:
+            store.set(
+                "greenhouse_learned_boards",
+                sorted(set(conf["_greenhouse_learned_boards"]) | set(learned)),
+            )
         for detail in details.get("sources", []):
             row = source_row(detail.get("source"))
             row.update({key: value for key, value in detail.items() if key not in count_keys})
@@ -373,21 +488,6 @@ def discover_once():
         store.event(
             f"Search finished: {len(store.jobs()) - before} new matching opportunities; {len(jobs)} source records checked."
         )
-        if conf.get("email", {}).get("enabled"):
-            summary = getattr(collectors, "get_last_email_result", lambda: None)()
-            if summary and not email_task_running.is_set():
-                email_counts = source_rows.get("email", {})
-                _save_email_result(
-                    {
-                        **summary,
-                        **{
-                            key: email_counts.get(key, 0)
-                            for key in ["existing", "filtered", "removed"]
-                        },
-                    },
-                    imported=email_counts.get("imported", 0),
-                    expected_revision=email_revision,
-                )
         if any(row["status"] != "ok" for row in source_rows.values()):
             result["status"] = "partial" if jobs else "error"
     except Exception as exc:
@@ -419,85 +519,136 @@ def discovery_loop():
             discover_once()
 
 
+def _failed_resume_result(job: dict, workspace: str, result: dict | None = None) -> dict:
+    """Add bounded retry state to an engine or exception failure."""
+    previous = job.get("resumeforge") if isinstance(job.get("resumeforge"), dict) else {}
+    attempts = (
+        _resume_attempt_count(previous.get("attempts")) + 1
+        if previous.get("workspace") == workspace
+        else 1
+    )
+    retry_after = None
+    if attempts < AUTO_RESUME_MAX_RETRIES:
+        delay = AUTO_RESUME_RETRY_BASE_SECONDS * (2 ** (attempts - 1))
+        retry_after = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+    return {
+        **(result or {}),
+        "status": "failed",
+        "workspace": workspace,
+        "attempts": attempts,
+        "retry_after": retry_after,
+    }
+
+
 def prepare_job(job_id, preserve_review=False):
     with application_lock:
         if stop_event.is_set():
             return
-        with store.lock:
-            job = store.get_job(job_id)
-            assist_mode = settings()["application_mode"] == "assist"
-            if (
-                not job
-                or (job.get("uncertain") and not assist_mode)
-                or _manual_handoff_active(job)
-                or (job.get("review_session") or {}).get("state") in ["opening", "opened"]
-                or (assist_mode and job["status"] == "preparing")
-                or job["status"]
-                in ["confirmed", "manually_verified", "applying", "submitting", "skipped"]
-            ):
-                return
-            preserve_review = preserve_review or job["status"] == "needs_review"
-            prior_status = job.get("preparation_prior_status") or job["status"]
-            review_note = (
-                (job.get("preparation_prior_note") or job.get("note", ""))
-                if preserve_review
-                else ""
-            )
-            worker["current"] = job["title"]
-            store.update_job(
-                job_id,
-                status="preparing",
-                preparation_prior_status=prior_status,
-                preparation_prior_note=review_note,
-                preparation_requested=False,
-                note="Selecting verified career facts and creating application documents.",
-            )
+        job = store.get_job(job_id)
+        if (
+            not job
+            or (job.get("applied") and not job.get("preparation_requested"))
+            or (job.get("uncertain") and settings()["application_mode"] != "assist")
+            or _manual_handoff_active(job)
+            or (job.get("review_session") or {}).get("state") in ("opening", "opened")
+            or job["status"] in ("skipped", "confirmed", "manually_verified", "preparing")
+            or job["status"] in ("applying", "submitting")
+        ):
+            return
+        prior_status = job.get("preparation_prior_status") or job["status"]
+        prior_note = job.get("preparation_prior_note") or job.get("note", "")
+        keep_review = preserve_review or prior_status == "needs_review"
+        keep_applied = job.get("applied") and prior_status == "applied"
+        worker["current"] = job["title"]
+        store.update_job(
+            job_id,
+            status="preparing",
+            preparation_requested=False,
+            preparation_prior_status=prior_status,
+            preparation_prior_note=prior_note,
+            note="ResumeForge is building the tailored resume.",
+        )
         try:
-            documents = prepare(job, store.get("profile"), DATA / "applications", settings())
-            final_status = (
-                "applied"
-                if job.get("applied") or prior_status == "applied"
-                else ("needs_review" if preserve_review else "prepared")
-            )
-            with store.lock:
-                current = store.get_job(job_id) or {}
-                current_documents = current.get("documents") or {}
-                if current_documents.get("resumeforge_pdf"):
-                    documents["resumeforge_pdf"] = current_documents["resumeforge_pdf"]
-                job = store.update_job(
-                    job_id,
-                    status=final_status,
-                    documents=documents,
-                    application={
-                        **(current.get("application") or {}),
-                        "documents": documents,
-                        "status": final_status,
-                        "note": documents["generation_note"],
-                    },
-                    note=review_note
-                    + " Application documents ready. "
-                    + documents["generation_note"],
-                    preparation_prior_status=None,
-                    preparation_prior_note=None,
+            result = resumeforge_bridge.build_resume(DATA, job)
+            if result["status"] == "ready":
+                documents = {"resumeforge_pdf": result["path"]}
+                current = store.get_job(job_id)
+                application = current.get("application")
+                extra = (
+                    {"application": {**application, "documents": documents}}
+                    if isinstance(application, dict)
+                    else {}
                 )
-            store.event(
-                f"Prepared {job['title']} at {job.get('company', '')} using {documents['generation_mode']} selection."
-            )
-            return job
+                store.update_job(
+                    job_id,
+                    status="applied"
+                    if keep_applied
+                    else "needs_review"
+                    if keep_review
+                    else "prepared",
+                    documents=documents,
+                    resumeforge=result,
+                    **extra,
+                    note=(prior_note + " ResumeForge resume is ready.").strip()
+                    if keep_review
+                    else "ResumeForge resume is ready.",
+                )
+                store.event(f"ResumeForge resume ready for {job['title']} at {job['company']}.")
+            else:
+                if result["status"] == "failed":
+                    workspace = str(
+                        result.get("workspace") or resumeforge_bridge.workspace_path(DATA, job).name
+                    )
+                    result = _failed_resume_result(job, workspace, result)
+                store.update_job(
+                    job_id,
+                    status="needs_review",
+                    documents={},
+                    resumeforge=result,
+                    note=(prior_note + " ResumeForge needs a revision before export.").strip(),
+                )
         except Exception as exc:
+            try:
+                workspace = resumeforge_bridge.workspace_path(DATA, job).name
+            except (TypeError, ValueError):
+                workspace = ""
+            setup_required = isinstance(exc, (FileNotFoundError, ValueError)) and (
+                "profile" in str(exc).casefold() or "model settings" in str(exc).casefold()
+            )
+            failure = _failed_resume_result(job, workspace)
             store.update_job(
                 job_id,
-                status="error",
-                note="Documents could not be prepared. See Problems for this job.",
+                status="needs_review",
+                documents={},
+                resumeforge={
+                    "status": "setup_required" if setup_required else "failed",
+                    "workspace": workspace,
+                    "attempts": 0 if setup_required else failure["attempts"],
+                    "retry_after": None if setup_required else failure["retry_after"],
+                    **(
+                        {"master_revision": resumeforge_bridge.master_revision()}
+                        if setup_required
+                        else {}
+                    ),
+                },
+                note=(
+                    prior_note
+                    + (
+                        " Save your ResumeForge profile; this resume will start automatically afterward."
+                        if setup_required
+                        else " ResumeForge could not finish this resume. Open the role to retry."
+                    )
+                ).strip(),
             )
             report_error(
-                "Documents could not be prepared for this job. Check the profile and try again.",
+                "ResumeForge could not finish this document.",
                 category="documents",
                 job=job,
                 detail=f"{type(exc).__name__}: {exc}",
             )
         finally:
             worker["current"] = None
+        return store.get_job(job_id)
 
 
 def apply_job(job_id):
@@ -678,6 +829,58 @@ def apply_job(job_id):
             worker["current"] = None
 
 
+def _automatic_resume_due(job: dict, *, now: datetime | None = None) -> bool:
+    """Return whether an unchanged 80%+ role needs one serialized build.
+
+    Successful and editorially blocked runs are stable. A changed posting gets
+    a new workspace and therefore one new build. Transient failures retry with
+    a short bound; missing first-run profile data waits without burning CPU and
+    becomes eligible as soon as the ResumeForge profile is saved.
+    """
+
+    if job.get("source") == "email" and (
+        job.get("description_missing") or job.get("needs_description_review")
+    ):
+        return False
+    try:
+        if float(job.get("fit") or 0) < AUTO_RESUME_MIN_FIT:
+            return False
+        expected_workspace = resumeforge_bridge.workspace_path(DATA, job).name
+    except (TypeError, ValueError):
+        return False
+    forge = job.get("resumeforge")
+    if not isinstance(forge, dict) or forge.get("workspace") != expected_workspace:
+        return True
+    status = forge.get("status")
+    if status == "ready":
+        path = (job.get("documents") or {}).get("resumeforge_pdf")
+        digest = str(forge.get("sha256") or "")
+        return not (
+            isinstance(path, str) and digest and resumeforge_bridge.checked_copy(path, digest, DATA)
+        )
+    if status == "setup_required":
+        # Retry only after the user actually changes their saved master draft.
+        # An existing but incomplete draft must not trigger a build every loop.
+        revision = resumeforge_bridge.master_revision()
+        return bool(revision and revision != forge.get("master_revision"))
+    if status != "failed":
+        # needs_content and needs_review require editorial input, not a hot loop.
+        return False
+    attempts = _resume_attempt_count(forge.get("attempts"))
+    if attempts >= AUTO_RESUME_MAX_RETRIES:
+        return False
+    retry_after = forge.get("retry_after")
+    if not retry_after:
+        return True
+    try:
+        deadline = datetime.fromisoformat(str(retry_after).replace("Z", "+00:00"))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return True
+    return (now or datetime.now(timezone.utc)) >= deadline
+
+
 def process_document_queue():
     if stop_event.is_set():
         return None
@@ -707,8 +910,8 @@ def process_document_queue():
             (
                 row
                 for row in store.jobs()
-                if row["status"] == "queued"
-                and not row.get("documents")
+                if row["status"] in ("queued", "prepared", "needs_review")
+                and _automatic_resume_due(row)
                 and not row.get("uncertain")
                 and not row.get("applied")
                 and not _manual_handoff_active(row)
@@ -722,10 +925,28 @@ def process_document_queue():
 
 
 def application_loop():
+    next_profile_check = 0.0
     while not stop_event.wait(2):
-        if settings()["application_mode"] == "assist":
-            process_document_queue()
-        elif settings()["submission_enabled"]:
+        now = time.monotonic()
+        if now >= next_profile_check and os.environ.get("JOBPILOT_TESTING") != "1":
+            next_profile_check = now + 10
+            try:
+                with store.lock:
+                    adopt_local_profile(
+                        store, resumeforge_bridge.master_workspace(), score_job, settings()
+                    )
+            except (OSError, sqlite3.OperationalError):
+                # The saved profile is committed only after rescoring. A transient
+                # error can be retried without taking the dashboard or queue down.
+                logging.exception("ResumeForge profile import could not finish; will retry")
+                continue
+        # Resume creation is independent of the deprecated application-mode
+        # switch. Every eligible role is handled by the same serialized
+        # ResumeForge queue, while form submission remains disabled in assist
+        # mode and is never required for a resume build.
+        if process_document_queue() is not None:
+            continue
+        if settings()["application_mode"] != "assist" and settings()["submission_enabled"]:
             job = next(
                 (
                     j
@@ -761,22 +982,14 @@ def health_loop():
                 ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(power))
                 awake = conf["keep_awake"] and power.ACLineStatus == 1
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000001 if awake else 0x80000000)
-            with httpx.Client(timeout=3, trust_env=False) as client:
-                tags = (
-                    client.get(conf["ollama_url"].rstrip("/") + "/api/tags")
-                    .raise_for_status()
-                    .json()
-                )
-                names = {m.get("name") for m in tags.get("models", [])}
-                worker["model_status"] = (
-                    "qwen3.5:9b ready locally"
-                    if conf["model"] in names
-                    else "Local model download pending"
-                )
+            else:
+                sleep_inhibitor.set_enabled(bool(conf["keep_awake"]))
+                awake = bool(sleep_inhibitor.process and sleep_inhibitor.process.poll() is None)
         except Exception:
-            worker["model_status"] = (
-                "Local model service unavailable; verified template fallback active"
-            )
+            # Sleep inhibition is best effort. ResumeForge owns model startup
+            # and status, so the always-on JobPilot worker never polls or wakes
+            # a language-model service.
+            awake = False
         worker["keep_awake"] = awake
         worker["email_status"] = (
             "Configured" if conf.get("email", {}).get("enabled") else "Not configured"
@@ -784,6 +997,7 @@ def health_loop():
         stop_event.wait(20)
     if os.name == "nt":
         ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+    sleep_inhibitor.close()
 
 
 @asynccontextmanager
@@ -806,7 +1020,7 @@ async def lifespan(app):
     with email_sync_lock:
         previous_email = store.get("email_sync", {})
         if (
-            previous_email.get("state") in ["checking", "syncing"]
+            previous_email.get("state") in ["checking", "syncing", "researching"]
             and not email_task_running.is_set()
         ):
             store.set(
@@ -824,12 +1038,14 @@ async def lifespan(app):
             ("discovery", discovery_loop),
             ("applications", application_loop),
             ("health", health_loop),
+            ("email", email_monitor_loop),
         ]:
             threading.Thread(target=target, name=name, daemon=True).start()
         if settings()["remote_intervention_enabled"]:
             remote_runtime.start_async()
     yield
     stop_event.set()
+    sleep_inhibitor.close()
     remote_runtime.stop()
 
 
@@ -837,12 +1053,32 @@ app = FastAPI(title="JobPilot", lifespan=lifespan, docs_url=None, redoc_url=None
 app.add_middleware(
     TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"]
 )
+extension_api = ExtensionAPI(store, DATA, TOKEN)
+app.include_router(extension_api.router)
 
 
 @app.middleware("http")
 async def local_security(request: Request, call_next):
+    if request.url.path.startswith("/api/extension/"):
+        return await extension_api.security(request, call_next)
     origin = request.headers.get("origin")
-    if origin and urlsplit(origin).hostname not in ["127.0.0.1", "localhost", "::1", "testserver"]:
+    # Extension host permissions can omit Origin on GET. Browser-controlled
+    # Fetch Metadata still distinguishes those fetches from dashboard requests.
+    # CLI/native requests without these headers remain supported.
+    if (
+        request.url.path.startswith("/api/")
+        and not origin
+        and request.headers.get("sec-fetch-site") is not None
+        and request.headers.get("sec-fetch-site") != "same-origin"
+        and request.headers.get("sec-fetch-mode") != "navigate"
+    ):
+        return JSONResponse(
+            {"detail": "Only the local dashboard may access this service."}, status_code=403
+        )
+    if origin and (
+        urlsplit(origin).scheme == "chrome-extension"
+        or urlsplit(origin).hostname not in ["127.0.0.1", "localhost", "::1", "testserver"]
+    ):
         return JSONResponse(
             {"detail": "Only the local dashboard may access this service."}, status_code=403
         )
@@ -868,12 +1104,16 @@ def session():
 
 
 @app.get("/api/state")
-def state():
+def state(include_keywords: bool = True):
     profile = store.get("profile")
-    profile_json = json.dumps(profile, sort_keys=True, ensure_ascii=False)
+    profile_json = (
+        json.dumps(profile, sort_keys=True, ensure_ascii=False) if include_keywords else ""
+    )
     jobs = []
     for job in store.jobs():
-        current = {**job, "keywords": job_keywords(job, profile_json)}
+        current = dict(job)
+        if include_keywords:
+            current["keywords"] = job_keywords(job, profile_json)
         forge = job.get("resumeforge")
         if isinstance(forge, dict):
             try:
@@ -953,25 +1193,29 @@ def control(body: dict):
     conf = store.get("settings", {})
     was_enabled = conf.get("search_enabled", False)
     if body.get("action") == "shutdown":
-        from . import browser
+        if settings()["application_mode"] != "assist":
+            from . import browser
 
-        if browser.login_in_progress():
-            raise HTTPException(
-                409,
-                "Close the JobPilot sign-in or verification browser before restarting the service.",
-            )
+            if browser.login_in_progress():
+                raise HTTPException(
+                    409,
+                    "Close the JobPilot sign-in or verification browser before restarting the service.",
+                )
         if (
             worker["searching"]
             or worker["submitting"]
             or worker["current"]
+            or email_task_running.is_set()
+            or _cover_letter_running()
             or not application_lock.acquire(blocking=False)
         ):
             raise HTTPException(
                 409, "Wait for the current application or search before restarting the service."
             )
         try:
-            conf.update(search_enabled=False, submission_enabled=False)
-            store.set("settings", conf)
+            if body.get("preserve_preferences") is not True:
+                conf.update(search_enabled=False, submission_enabled=False)
+                store.set("settings", conf)
             store.event("Service gracefully stopped for maintenance; queue retained.")
             stop_event.set()
             if server_instance:
@@ -1023,7 +1267,7 @@ def save_settings(body: dict):
     update = {k: v for k, v in body.items() if k in allowed}
     for key, low, high in [
         ("search_interval_minutes", 5, 1440),
-        ("min_fit", 0, 100),
+        ("min_fit", 0, int(AUTO_RESUME_MIN_FIT)),
         ("results_per_source", 1, 50),
         ("hours_old", 1, 720),
     ]:
@@ -1038,10 +1282,6 @@ def save_settings(body: dict):
         or any(not isinstance(x, str) for x in update["target_roles"])
     ):
         raise HTTPException(400, "Target roles must be a nonempty list of role names.")
-    if "ollama_url" in update and not local_endpoint(update["ollama_url"]):
-        raise HTTPException(400, "Inference must use a local HTTP Ollama endpoint.")
-    if "model" in update and update["model"] != "qwen3.5:9b":
-        raise HTTPException(400, "Only the installed local qwen3.5:9b model is enabled.")
     for key in ["remote", "search_enabled", "submission_enabled", "keep_awake", "startup"]:
         if key in update and not isinstance(update[key], bool):
             raise HTTPException(400, f"{key} must be true or false.")
@@ -1360,9 +1600,12 @@ def _cleanup_clock():
 
 
 def _cleanup_busy():
-    from . import browser
+    browser_busy = False
+    if settings()["application_mode"] != "assist":
+        from . import browser
 
-    if worker["submitting"] or worker["current"] or browser.login_in_progress():
+        browser_busy = browser.login_in_progress()
+    if worker["submitting"] or worker["current"] or browser_busy:
         return True
     if not application_lock.acquire(blocking=False):
         return True
@@ -1428,9 +1671,20 @@ def delete_old_jobs(body: dict):
 
 
 def _normal_browser_tab(url):
-    from . import browser
+    if settings()["application_mode"] == "assist":
+        from .links import open_external_url
 
-    result = browser.open_browser_tab(url)
+        try:
+            result = open_external_url(url)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                400,
+                "The job page could not be opened. Copy its public posting link into your browser.",
+            ) from exc
+    else:
+        from . import browser
+
+        result = browser.open_browser_tab(url)
     if result.get("status") != "opened":
         raise HTTPException(400, result.get("note") or "Could not open the default browser.")
     return result
@@ -1571,14 +1825,23 @@ def prepare_action(job_id: int):
         application_lock.release()
 
 
+@app.post("/api/resumeforge/profile/open")
+def open_resumeforge_profile():
+    try:
+        resumeforge_bridge.open_editor(
+            resumeforge_bridge.desktop_executable(), resumeforge_bridge.master_workspace()
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise HTTPException(503, "ResumeForge editor could not open.") from exc
+    return {"opened": True}
+
+
 @app.post("/api/jobs/{job_id}/resumeforge/open")
 def open_in_resumeforge(job_id: int):
     job = require_job(job_id)
     try:
         executable = resumeforge_bridge.desktop_executable()
-        workspace = resumeforge_bridge.prepare_workspace(
-            DATA, {**job, "keywords": job_keywords(job)}
-        )
+        workspace = resumeforge_bridge.prepare_workspace(DATA, job)
         resumeforge_bridge.open_editor(executable, workspace)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -1601,6 +1864,8 @@ def resumeforge_status(job_id: int):
     except ValueError:
         return {"status": "invalid", "attached": False}
     if not (workspace / "draft.json").is_file():
+        if (job.get("resumeforge") or {}).get("status") == "setup_required":
+            return {"status": "setup_required", "attached": False}
         return {"status": "not_opened", "attached": False}
     try:
         result = resumeforge_bridge.checked_run(workspace)
@@ -1620,79 +1885,173 @@ def resumeforge_status(job_id: int):
 @app.post("/api/jobs/{job_id}/resumeforge/use")
 @guard_job_mutation
 def use_resumeforge_pdf(job_id: int):
+    from resumeforge.desktop_support import export_checked
+
     job = require_job(job_id)
     try:
         workspace = resumeforge_bridge.workspace_path(DATA, job)
         resumeforge_bridge.validate_workspace(DATA, workspace)
         result = resumeforge_bridge.checked_run(workspace)
-    except FileNotFoundError as exc:
-        raise HTTPException(409, "Open this role in ResumeForge and build a resume first.") from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     if result["status"] != "ready":
-        raise HTTPException(
-            409, "The latest ResumeForge resume is not ready. Finish its checks there first."
-        )
-    existing = job.get("resumeforge") or {}
-    if existing.get("run_id") == result["run_id"] and existing.get("sha256") == result["sha256"]:
-        path = (job.get("documents") or {}).get("resumeforge_pdf")
-        if path and resumeforge_bridge.checked_copy(path, result["sha256"], DATA):
-            return {
-                "attached": True,
-                "already_attached": True,
-                "message": "ResumeForge PDF is already on this role.",
-            }
-
-    folder = DATA / "applications" / f"resumeforge-job-{job_id}-{result['run_id']}"
+        raise HTTPException(409, "Build and review the resume in ResumeForge first.")
     try:
-        resumeforge_bridge.validate_import_directory(DATA, folder)
+        destination = resumeforge_bridge.resume_destination(DATA, job)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    folder.mkdir(parents=True, exist_ok=True)
-    destination = folder / "resume.pdf"
-    if destination.is_symlink():
-        raise HTTPException(409, "The ResumeForge PDF destination is redirected.")
-    if destination.is_file():
-        if sha256(destination.read_bytes()).hexdigest() != result["sha256"]:
-            raise HTTPException(409, "The existing ResumeForge copy differs from its checked run.")
-    else:
-        temporary = folder / f".resume-{secrets.token_hex(8)}.pdf"
-        try:
-            shutil.copyfile(result["pdf"], temporary)
-            if sha256(temporary.read_bytes()).hexdigest() != result["sha256"]:
-                raise HTTPException(409, "The ResumeForge PDF changed while it was being imported.")
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-    with store.lock:
-        current = store.get_job(job_id)
-        if current is None:
-            raise HTTPException(404, "This opportunity is no longer available.")
-        application = dict(current.get("application") or {})
-        documents = {
-            **(application.get("documents") or {}),
-            **(current.get("documents") or {}),
-            "resumeforge_pdf": str(destination),
-        }
-        application["documents"] = documents
-        store.update_job(
-            job_id,
-            documents=documents,
-            application=application,
-            resumeforge={
-                "run_id": result["run_id"],
-                "sha256": result["sha256"],
-                "workspace": workspace.name,
-                "attached_at": store.now(),
-            },
-        )
-    store.event(f"Added a checked ResumeForge PDF for {job['title']} at {job['company']}.")
+    was_checked = resumeforge_bridge.checked_copy(str(destination), result["sha256"], DATA)
+    try:
+        export_checked(result["pdf"].parent, destination)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    documents = {"resumeforge_pdf": str(destination)}
+    # An older letter can remain beside a newly exported resume. Only attach
+    # it when the saved letter is verified against this exact checked resume.
+    try:
+        cover = resumeforge_bridge.cover_workspace(DATA, job)
+        if cover.digest == result["sha256"] and cover.state()["ready"]:
+            documents["resumeforge_cover_pdf"] = str(cover.letter)
+    except (OSError, ValueError, KeyError, sqlite3.Error):
+        pass
+    job = require_job(job_id)
+    already_attached = (
+        (job.get("resumeforge") or {}).get("run_id") == result["run_id"]
+        and job.get("documents") == documents
+        and was_checked
+    )
+    changes = {
+        "status": "needs_review" if job["status"] == "needs_review" else "prepared",
+        "documents": documents,
+        "resumeforge": {
+            "run_id": result["run_id"],
+            "sha256": result["sha256"],
+            "workspace": workspace.name,
+            "attached_at": store.now(),
+        },
+    }
+    if isinstance(job.get("application"), dict):
+        changes["application"] = {**job["application"], "documents": documents}
+    store.update_job(job_id, **changes)
     return {
         "attached": True,
-        "already_attached": False,
-        "message": "Checked ResumeForge PDF added to this role.",
+        "already_attached": already_attached,
+        "message": "ResumeForge PDF saved in JobPilot RF Docs.",
     }
+
+
+def _cover_workspace(job_id):
+    job = require_job(job_id)
+    return resumeforge_bridge.cover_workspace(DATA, job)
+
+
+cover_task_lock = threading.Lock()
+cover_tasks = {}
+
+
+def _cover_letter_running():
+    with cover_task_lock:
+        return any(task["state"] == "running" for task in cover_tasks.values())
+
+
+cover_preview_lock = threading.Lock()
+
+
+@app.get("/api/jobs/{job_id}/cover-letter")
+def cover_letter_status(job_id: int, summary: bool = False):
+    try:
+        result = _cover_workspace(job_id).state()
+        if summary:
+            result.pop("draft", None)
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
+        result = {"can_generate": False, "exists": False, "ready": False, "message": str(exc)}
+    with cover_task_lock:
+        task = cover_tasks.get(job_id)
+        if task:
+            result["task"] = task.copy()
+    return result
+
+
+def _generate_cover_task(workspace, job_id, revision, options):
+    def progress(message):
+        with cover_task_lock:
+            cover_tasks[job_id].update(message=message)
+
+    try:
+        workspace.generate(revision, progress=progress, **options)
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
+        state = {"state": "failed", "message": str(exc)}
+    except Exception:
+        logging.exception("The explicit cover letter task could not finish")
+        state = {"state": "failed", "message": "ResumeForge could not finish the cover letter."}
+    else:
+        state = {"state": "ready", "message": "Cover letter ready."}
+    with cover_task_lock:
+        cover_tasks[job_id] = state
+
+
+@app.post("/api/jobs/{job_id}/cover-letter")
+def change_cover_letter(job_id: int, body: dict):
+    action = body.get("action")
+    revision = body.get("revision")
+    if action not in ("generate", "save") or type(revision) is not int or revision < 0:
+        raise HTTPException(400, "Choose a cover letter action and reopen its current draft.")
+    try:
+        workspace = _cover_workspace(job_id)
+        if action == "save":
+            return workspace.save(body.get("text"), revision)
+        options = {
+            "confirmed": body.get("confirmed") is True,
+            "instructions": str(body.get("instructions") or "")[:3000],
+            "company_url": str(body.get("company_url") or "")[:1800].strip(),
+        }
+        workspace.check_generation(revision, options["confirmed"], options["instructions"])
+    except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    with cover_task_lock:
+        if any(task["state"] == "running" for task in cover_tasks.values()):
+            raise HTTPException(409, "Another cover letter is still being drafted in JobPilot.")
+        cover_tasks.pop(job_id, None)
+        if len(cover_tasks) >= 24:
+            del cover_tasks[next(iter(cover_tasks))]
+        queued = {"state": "running", "message": "Preparing the cover letter…"}
+        cover_tasks[job_id] = queued.copy()
+    threading.Thread(
+        target=_generate_cover_task,
+        args=(workspace, job_id, revision, options),
+        name="JobPilot cover letter",
+        daemon=True,
+    ).start()
+    return JSONResponse({"task": queued}, status_code=202)
+
+
+@app.get("/api/jobs/{job_id}/cover-letter/preview")
+def cover_letter_preview(job_id: int):
+    import pypdfium2
+
+    try:
+        workspace = _cover_workspace(job_id)
+        pdf_path = _artifact_target(str(workspace.letter), document=True)
+        if workspace.letter.is_symlink() or pdf_path.stat().st_size > 15 * 1024 * 1024:
+            raise ValueError("The cover letter preview is unavailable.")
+        # Job details can be open in multiple UI windows. PDFium renders
+        # through one call at a time within this service.
+        with cover_preview_lock, pypdfium2.PdfDocument(str(pdf_path)) as pdf:
+            page = pdf[0]
+            try:
+                bitmap = page.render(scale=1.35)
+                try:
+                    stream = io.BytesIO()
+                    bitmap.to_pil().save(stream, format="PNG")
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+        return Response(
+            stream.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"}
+        )
+    except (OSError, ValueError, KeyError, pypdfium2.PdfiumError) as exc:
+        raise HTTPException(409, "The cover letter preview is unavailable.") from exc
 
 
 @app.post("/api/jobs/{job_id}/retry")
@@ -1739,6 +2098,10 @@ def review_action(job_id: int, body: dict | None = None):
         return job_browser_tab(job_id, {"purpose": "application"})
     if mode not in ["isolated", "remote"]:
         raise HTTPException(400, "Choose default_browser, isolated or remote.")
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(
+            409, "The combined app uses your regular browser for application review."
+        )
     if mode == "remote" and not (
         settings()["remote_intervention_enabled"] and remote_runtime.status()["listening"]
     ):
@@ -1935,6 +2298,8 @@ def login(body: dict):
         return browser_tab(body)
     if mode != "isolated":
         raise HTTPException(400, "Choose default_browser or isolated.")
+    if settings()["application_mode"] == "assist":
+        raise HTTPException(409, "The combined app uses your regular browser for sign-in.")
     from . import browser
 
     platform = body.get("platform", "employer")
@@ -1996,7 +2361,7 @@ def _save_email_configuration(body: dict):
     conf = store.get("settings", {})
     conf["email"] = safe
     store.set("settings", conf)
-    store.set("_email_config_revision", store.get("_email_config_revision", 0) + 1)
+    store.set("_email_next_poll", 0)
     store.set(
         "email_sync",
         {
@@ -2017,12 +2382,17 @@ def email_status():
         "messages_available": 0,
         "messages_checked": 0,
         "messages_skipped": 0,
+        "non_alerts": 0,
         "links_found": 0,
         "imported": 0,
         "existing": 0,
         "filtered": 0,
         "removed": 0,
         "truncated": False,
+        "researched": 0,
+        "awaiting_research": 0,
+        "unverified": 0,
+        "closed": 0,
     }
     return {
         **defaults,
@@ -2032,17 +2402,22 @@ def email_status():
     }
 
 
-def _save_email_result(result, imported=0, complete_task=False, expected_revision=None):
+def _save_email_result(result, imported=0, complete_task=False):
     fields = [
         "checked_at",
         "messages_available",
         "messages_checked",
         "messages_skipped",
+        "non_alerts",
         "links_found",
         "truncated",
         "existing",
         "filtered",
         "removed",
+        "researched",
+        "awaiting_research",
+        "unverified",
+        "closed",
     ]
     summary = {key: result[key] for key in fields if key in result}
     result_state = result.get("state", "connected")
@@ -2057,134 +2432,240 @@ def _save_email_result(result, imported=0, complete_task=False, expected_revisio
         imported=imported,
     )
     with email_sync_lock:
-        if expected_revision is not None and expected_revision != store.get(
-            "_email_config_revision", 0
-        ):
-            return email_status()
         if email_task_running.is_set() and not complete_task:
             return email_status()
         store.set("email_sync", summary)
         worker["email_status"] = summary["message"]
-        if complete_task:
-            email_task_running.clear()
     return summary
 
 
-def _enrich_email_alert(alert):
-    """Keep the alert usable when a detail link returns a sign-in or generic page."""
-    from . import collectors
+EMAIL_SCAN_INTERVAL = 15 * 60
+EMAIL_RESEARCH_BATCH = 6
+EMAIL_RESEARCH_RETRIES = (5 * 60, 30 * 60)
 
-    job = dict(alert)
-    try:
-        details = collectors.fetch_job(job.get("url", ""))
-        if details.get("needs_description_review"):
-            raise ValueError("The job page did not provide a verified job posting.")
-        job.update({key: value for key, value in details.items() if value not in [None, "", []]})
-        job["source"] = "email"
-        if job.get("url") != alert.get("url"):
-            job["source_url"] = alert.get("url")
-        job["description_missing"] = (
-            len(str(job.get("description", "")).strip()) < 80
-            or not job.get("company")
-            or not job.get("title")
+
+def _email_pending(job):
+    return (
+        job.get("source") == "email"
+        and job["status"] in {"queued", "needs_review", "review_required"}
+        and (job.get("description_missing") or job.get("needs_description_review"))
+        and not (job.get("documents") or job.get("applied") or job.get("uncertain"))
+        and not job.get("attempts")
+        and not _manual_handoff_active(job)
+        and (job.get("review_session") or {}).get("state") not in {"opening", "opened"}
+    )
+
+
+def _email_due(job, now):
+    research = job.get("alert_research") or {}
+    return _email_pending(job) and (
+        not research
+        or (research.get("state") == "pending" and (research.get("retry_at") or 0) <= now)
+    )
+
+
+def _matching_employer_posting(alert, saved_jobs):
+    def signature(job):
+        return tuple(
+            " ".join(str(job.get(key) or "").casefold().split())
+            for key in ("title", "company", "location")
         )
-        for key in ["alert_subject", "alert_received_at", "alert_from", "alert_metadata_version"]:
-            if key in alert:
-                job[key] = alert[key]
-    except Exception as exc:
-        report_error(
-            "The email alert was imported, but the full job posting could not be read. Open its link to check the details.",
-            category="fetch",
-            job=job,
-            detail=f"{type(exc).__name__}: {exc}",
+
+    identity = signature(alert)
+    if not all(identity):
+        return None
+    matches = [
+        job
+        for job in saved_jobs
+        if job.get("source", "").casefold() in {"greenhouse", "lever", "ashby", "employer"}
+        and signature(job) == identity
+        and not (job.get("description_missing") or job.get("needs_description_review"))
+        and len(str(job.get("description") or "")) >= 80
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _research_email_batch(job_id=None):
+    from .posting_research import PostingClosed, research_posting
+
+    deadline = time.monotonic() + 45
+    saved_jobs = store.jobs()
+    candidates = [
+        job
+        for job in saved_jobs
+        if (
+            _email_due(job, time.time())
+            if job_id is None
+            else job["id"] == job_id and _email_pending(job)
         )
-    return job
-
-
-def _email_work(mode, config):
-    from . import collectors
-    from .core import canonical_url
-
-    completed = False
-    try:
-        result = (
-            collectors.check_email_connection(config)
-            if mode == "checking"
-            else collectors.sync_email(config)
-        )
-        imported, unchanged, filtered, removed = 0, 0, 0, 0
-        existing_jobs = store.jobs()
-        existing = {job["id"] for job in existing_jobs}
-        existing_email_routes = {
-            canonical_url(saved[key])
-            for saved in existing_jobs
-            if saved.get("source") == "email"
-            for key in ["url", "source_url", "apply_url"]
-            if saved.get(key)
-        }
-
-        def refresh_filtered(classified):
-            if classified.get("source") == "email" and any(
-                canonical_url(classified[key]) in existing_email_routes
-                for key in ["url", "source_url", "apply_url"]
-                if classified.get(key)
-            ):
-                store.add_job(classified)
-
-        fetches, fetch_deadline = 0, time.monotonic() + 45
-        for alert in result.get("jobs", []) if mode == "syncing" else []:
-            job = dict(alert)
-            classified = classify_job(job, store.get("profile"), settings())
-            if classified.get("status") == "skipped":
-                filtered += 1
-                refresh_filtered(classified)
-                continue
-            if (
-                (
-                    job.get("description_missing")
-                    or len(str(job.get("description", ""))) < 80
-                    or not job.get("company")
-                )
-                and fetches < 3
-                and time.monotonic() < fetch_deadline
-            ):
-                fetches += 1
-                job = _enrich_email_alert(job)
-            try:
-                classified = classify_job(job, store.get("profile"), settings())
-                if classified.get("status") == "skipped":
-                    filtered += 1
-                    refresh_filtered(classified)
-                    continue
-                saved = store.add_job(classified)
-                if saved is not None and saved["id"] not in existing:
-                    imported += 1
-                    existing.add(saved["id"])
-                elif saved is not None:
-                    unchanged += 1
-                else:
-                    removed += 1
-            except Exception as exc:
+    ]
+    candidates.sort(key=lambda job: (-(job.get("fit") or 0), job["id"]))
+    verified = 0
+    for job in candidates[:EMAIL_RESEARCH_BATCH]:
+        if stop_event.is_set() or time.monotonic() >= deadline:
+            break
+        previous = job.get("alert_research") or {}
+        attempt = 1 if job_id is not None else int(previous.get("attempts") or 0) + 1
+        state = "verified"
+        duplicate = None
+        try:
+            details = research_posting(job)
+        except PostingClosed:
+            state = "closed"
+        except Exception as exc:
+            state = "pending" if attempt <= len(EMAIL_RESEARCH_RETRIES) else "unverified"
+            if alternate := _matching_employer_posting(job, saved_jobs):
+                # The saved employer role must still have a live public
+                # posting. Do not use an old cached description as proof.
+                try:
+                    details = research_posting(alternate)
+                    duplicate = alternate["id"]
+                    state = "duplicate"
+                except Exception:
+                    pass
+            if state != "duplicate" and attempt == 1:
                 report_error(
-                    "A job alert could not be imported. Open the posting and import its link again.",
-                    category="email",
+                    "A full posting was unavailable for a saved inbox alert. JobPilot will retry.",
+                    category="fetch",
                     job=job,
-                    detail=f"{type(exc).__name__}: {exc}",
+                    detail=type(exc).__name__,
                 )
+        with store.lock:
+            current = store.get_job(job["id"])
+            if not current or not _email_pending(current):
+                continue
+            research = {"state": state, "attempts": attempt, "checked_at": store.now()}
+            if state in {"verified", "duplicate"}:
+                verified += 1
+                if duplicate:
+                    research["duplicate_of"] = duplicate
+                    details["source_url"] = current.get("source_url") or current["url"]
+                enriched = classify_job(
+                    {**current, **details, "alert_research": research},
+                    store.get("profile"),
+                    settings(),
+                )
+                # The stable alert row may already be bookmarked. Preserve its
+                # ID and job identity while updating its public posting details.
+                enriched.pop("url", None)
+                enriched.setdefault("note", "")
+                enriched.setdefault("review_reason", None)
+                if duplicate:
+                    enriched.update(
+                        status="skipped", note="Already saved from the employer's job board."
+                    )
+                store.update_job(job["id"], **enriched)
+            elif state == "closed":
+                store.update_job(
+                    job["id"],
+                    alert_research=research,
+                    status="skipped",
+                    note="The employer's public posting has closed.",
+                )
+            else:
+                if state == "pending":
+                    research["retry_at"] = time.time() + EMAIL_RESEARCH_RETRIES[attempt - 1]
+                store.update_job(
+                    job["id"],
+                    alert_research=research,
+                    note="Full posting unavailable. JobPilot will retry."
+                    if state == "pending"
+                    else "Full posting unverified. Review the public link.",
+                )
+    return verified
+
+
+def _stage_email_alerts(alerts):
+    existing_jobs = store.jobs()
+    existing = {job["id"] for job in existing_jobs}
+    routes = {
+        canonical_url(job[key])
+        for job in existing_jobs
+        for key in ("url", "source_url", "apply_url")
+        if job.get(key)
+    }
+    counts = dict.fromkeys(("imported", "existing", "filtered", "removed"), 0)
+    profile, conf = store.get("profile"), settings()
+    for alert in alerts:
+        # Location and job-summary hints are provisional. A confident title
+        # can eliminate an obvious mismatch, but an inferred title cannot.
+        classified = classify_job(
+            {**alert, "source": "email", "description_missing": True, "location": ""},
+            profile,
+            conf,
+        )
+        classified["location"] = alert.get("location", "")
+        if (
+            alert.get("title") in (None, "", "Job from email alert")
+            or alert.get("alert_title_source") == "subject"
+        ) and classified.get("note") != "Company is excluded in preferences.":
+            classified.update(status="needs_review", note="Waiting for the public posting.")
+        if classified["status"] == "skipped":
+            counts["filtered"] += 1
+            if canonical_url(classified["url"]) in routes:
+                store.add_job(classified)
+            continue
+        saved = store.add_job(classified)
+        if saved is None:
+            counts["removed"] += 1
+        elif saved["id"] in existing:
+            counts["existing"] += 1
+        else:
+            counts["imported"] += 1
+            existing.add(saved["id"])
+    return counts
+
+
+def _email_work(mode, config, job_id=None):
+    from . import collectors
+
+    try:
+        if mode == "checking":
+            _save_email_result(collectors.check_email_connection(config), complete_task=True)
+            return
+        result = email_status()
         if mode == "syncing":
-            result.update(
-                existing=unchanged,
-                filtered=filtered,
-                removed=removed,
-                message=(
-                    f"Found {result.get('links_found', 0)} job links: {imported} new, "
-                    f"{unchanged} already saved, {filtered} outside preferences, "
-                    f"{removed} previously removed."
-                ),
+            account = [config.get(key) for key in ("host", "username", "mailbox", "lookback_days")]
+            saved = store.get("_email_checkpoint", {})
+            checkpoint = saved.get("cursor") if saved.get("account") == account else None
+            result = collectors.sync_email({**config, "checkpoint": checkpoint})
+            result.update(_stage_email_alerts(result["jobs"]))
+            # Only advance after staging all jobs. A crash may repeat a
+            # batch, but the store deduplicates URLs and respects removals.
+            if result.get("checkpoint"):
+                store.set("_email_checkpoint", {"account": account, "cursor": result["checkpoint"]})
+            delay = (
+                5 * 60
+                if result.get("scan_interrupted")
+                else 30
+                if result.get("truncated") and result.get("checkpoint")
+                else EMAIL_SCAN_INTERVAL
             )
-        with email_sync_lock:
-            _save_email_result(result, imported, complete_task=True)
-            completed = True
+            store.set("_email_next_poll", time.time() + delay)
+        result["researched"] = (result.get("researched") or 0) + _research_email_batch(job_id)
+        jobs = store.jobs()
+        pending = [job for job in jobs if _email_pending(job)]
+        unverified = sum(
+            (job.get("alert_research") or {}).get("state") == "unverified" for job in pending
+        )
+        inbox_state = (
+            result.get("inbox_state", "connected") if mode == "researching" else "connected"
+        )
+        result.update(
+            state=inbox_state,
+            awaiting_research=len(pending) - unverified,
+            unverified=unverified,
+            closed=sum((job.get("alert_research") or {}).get("state") == "closed" for job in jobs),
+            message=result.get("inbox_message")
+            if inbox_state != "connected"
+            else (
+                f"Found {result.get('links_found', 0)} job links: {result.get('imported', 0)} new, "
+                f"{result.get('existing', 0)} already saved, "
+                f"{result.get('filtered', 0)} outside preferences, "
+                f"{result.get('removed', 0)} previously removed."
+            ),
+        )
+        _save_email_result(result, result.get("imported", 0), complete_task=True)
     except Exception as exc:
         message = (
             str(exc)
@@ -2193,40 +2674,64 @@ def _email_work(mode, config):
         )
         report_error(message, category="email", detail=f"{type(exc).__name__}: {exc}")
         with email_sync_lock:
+            store.set("_email_next_poll", time.time() + EMAIL_SCAN_INTERVAL)
             store.set(
                 "email_sync",
                 {**email_status(), "state": "error", "message": message, "checked_at": store.now()},
             )
             worker["email_status"] = message
-            email_task_running.clear()
-            completed = True
     finally:
-        if not completed:
-            with email_sync_lock:
-                email_task_running.clear()
+        with email_sync_lock:
+            email_task_running.clear()
 
 
-def _start_email(mode):
-    config = settings().get("email", {})
-    if not config.get("username"):
-        raise HTTPException(
-            400, "Save your Gmail address and a Google app password in Email settings first."
-        )
+def email_monitor_loop():
+    while not stop_event.wait(15):
+        conf = settings().get("email", {})
+        if (
+            not (conf.get("enabled") and conf.get("credential_saved") and conf.get("username"))
+            or email_task_running.is_set()
+        ):
+            continue
+        if email_status()["state"] == "not_connected":
+            continue
+        now = time.time()
+        if now >= store.get("_email_next_poll", 0):
+            _start_email("syncing")
+        elif any(_email_due(job, now) for job in store.jobs()):
+            _start_email("researching")
+
+
+def _start_email(mode, job_id=None):
     with email_sync_lock:
+        config = settings().get("email", {})
+        if job_id is None and not config.get("username"):
+            raise HTTPException(
+                400, "Save your Gmail address and a Google app password in Email settings first."
+            )
         if email_task_running.is_set():
+            if job_id is not None:
+                raise HTTPException(409, "Wait for the active inbox or research task to finish.")
             return JSONResponse({"ok": True, "state": email_status()["state"]}, status_code=202)
         email_task_running.set()
+        prior = email_status()
+        if mode == "researching":
+            # Keep the last inbox result while the work uses only saved links.
+            prior["inbox_state"] = prior["state"]
+            prior["inbox_message"] = prior["message"]
         store.set(
             "email_sync",
             {
-                **email_status(),
+                **prior,
                 "state": mode,
-                "message": "Checking the Gmail connection."
-                if mode == "checking"
-                else "Reading job alerts from Gmail.",
+                "message": {
+                    "checking": "Checking the Gmail connection.",
+                    "syncing": "Reading job alerts from Gmail.",
+                    "researching": "Verifying public postings for saved alerts.",
+                }[mode],
             },
         )
-        threading.Thread(target=_email_work, args=(mode, dict(config)), daemon=True).start()
+        threading.Thread(target=_email_work, args=(mode, dict(config), job_id), daemon=True).start()
     return JSONResponse({"ok": True, "state": mode}, status_code=202)
 
 
@@ -2240,17 +2745,27 @@ def sync_email(body: dict | None = None):
     return _start_email("syncing")
 
 
+@app.post("/api/jobs/{job_id}/email/research")
+def research_email_job(job_id: int):
+    if not _email_pending(require_job(job_id)):
+        raise HTTPException(409, "This alert does not need public posting research.")
+    return _start_email("researching", job_id=job_id)
+
+
 def _artifact_target(path, *, document=False):
     if not isinstance(path, str) or not path.strip() or "\x00" in path:
         raise HTTPException(400, "Choose a generated document and try again.")
     target = Path(path).resolve()
-    allowed = [DATA / "applications", DATA / "receipts", DATA / "evidence"]
+    allowed = [
+        DATA / "applications",
+        DATA / "receipts",
+        DATA / "evidence",
+        Path.home() / "Downloads" / "JobPilot RF Docs",
+    ]
     if not any(target.is_relative_to(x.resolve()) for x in allowed):
         raise HTTPException(403, "Only generated application files can be accessed.")
-    if document and target.suffix.lower() not in {".pdf", ".docx"}:
-        raise HTTPException(
-            400, "Open supports PDF and Word documents. Use Download for other files."
-        )
+    if document and target.suffix.lower() != ".pdf":
+        raise HTTPException(400, "Open supports PDF documents.")
     if not target.is_file():
         raise HTTPException(404, "This file is missing. Regenerate the documents and try again.")
     return target

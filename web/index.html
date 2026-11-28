@@ -12,6 +12,7 @@
     />
     <link href="/style.css" rel="stylesheet" />
     <script defer="" src="/app.js"></script>
+    <script defer="" src="/extension-settings.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
@@ -81,7 +82,10 @@
           <div>
             <div class="eyebrow">DISCOVER &amp; PREPARE</div>
             <h1>Opportunities</h1>
-            <p>Find a role, review the keywords, and prepare your documents.</p>
+            <p>
+              Find a role and review its fit. ResumeForge builds resume PDFs for roles at 80% or
+              above.
+            </p>
           </div>
           <div class="header-actions">
             <button class="button secondary" id="searchNow">
@@ -158,7 +162,7 @@
               <div class="panel-heading pipeline-heading">
                 <div>
                   <h2>Your opportunities</h2>
-                  <p>Newer postings first, then the strongest fit.</p>
+                  <p>Recent roles near your experience level first.</p>
                 </div>
                 <div class="pipeline-actions">
                   <button class="button secondary compact" id="cleanupJobs">
@@ -243,7 +247,10 @@
             <section class="profile-nudge">
               <div class="nudge-icon" data-icon="shield"></div>
               <h3>Application profile</h3>
-              <p>Documents use the experience and qualifications saved in your profile.</p>
+              <p>
+                Fit scores use your JobPilot profile. Resume PDFs use your saved ResumeForge
+                profile.
+              </p>
               <button class="text-button" data-view="profile">
                 Review your profile <span data-icon="arrow"></span>
               </button>
@@ -339,7 +346,10 @@
           <div class="panel-heading">
             <div>
               <h2>Gmail job alerts</h2>
-              <p>Use a Gmail app password. Your password is saved in Windows credential storage.</p>
+              <p>
+                Use a Gmail app password. JobPilot saves it in your operating system’s credential
+                store.
+              </p>
             </div>
             <span class="soft-icon" data-icon="mail"></span>
           </div>
@@ -392,7 +402,7 @@
             </details>
             <label class="check-label full"
               ><input name="enabled" type="checkbox" checked /><span
-                >Check Gmail automatically with job searches</span
+                >Scan Gmail every 15 minutes and research new alerts</span
               ></label
             >
             <div class="form-footer full">
@@ -424,7 +434,7 @@
           <div>
             <div class="eyebrow">SEARCH AND WORKER SETTINGS</div>
             <h1>Preferences</h1>
-            <p>Choose your target roles, search cadence and local model.</p>
+            <p>Choose your target roles and search cadence.</p>
           </div>
         </header>
         <form class="panel settings-panel" id="settingsForm">
@@ -457,25 +467,15 @@ Cloud Security Engineer"
                 required=""
                 type="number" /></label
             ><label
-              >Minimum fit <span class="label-note">0–100</span
-              ><input max="100" min="0" name="min_fit" required="" type="number"
+              >Opportunity list minimum <span class="label-note">0–80</span
+              ><input max="80" min="0" name="min_fit" required="" type="number"
             /></label>
-            <div class="form-section-title full">
-              <h2>Local model</h2>
-              <p>Application preparation uses your local Ollama service.</p>
-            </div>
-            <label
-              >Ollama URL<input
-                name="ollama_url"
-                placeholder="http://127.0.0.1:11436"
-                required=""
-                type="url" /></label
-            ><label
-              >Model<input name="model" placeholder="qwen3.5:9b" readonly="" required=""
-            /></label>
+            <p class="form-note full">
+              Roles scoring 80 or higher are always kept and sent to ResumeForge.
+            </p>
             <div class="form-section-title full">
               <h2>Discovery &amp; startup</h2>
-              <p>Choose when searches run on this PC.</p>
+              <p>Choose when searches run on this computer.</p>
             </div>
             <label class="check-label"
               ><input name="search_enabled" type="checkbox" /><span
@@ -483,12 +483,10 @@ Cloud Security Engineer"
               ></label
             ><label class="check-label"
               ><input name="keep_awake" type="checkbox" /><span
-                >Keep PC awake while plugged in</span
+                >Keep computer awake while plugged in</span
               ></label
             ><label class="check-label"
-              ><input name="startup" type="checkbox" /><span
-                >Start JobPilot at Windows sign-in</span
-              ></label
+              ><input name="startup" type="checkbox" /><span>Start JobPilot at sign-in</span></label
             >
             <div class="form-footer full">
               <p class="form-note">
@@ -500,6 +498,64 @@ Cloud Security Engineer"
             </div>
           </div>
         </form>
+        <section
+          aria-labelledby="extensionHeading"
+          class="panel extension-panel"
+          id="extensionPanel"
+        >
+          <div class="panel-heading">
+            <div>
+              <h2 id="extensionHeading">Chrome autofill</h2>
+              <p>Use your profile and prepared documents in application forms in Chrome.</p>
+            </div>
+          </div>
+          <div class="extension-body">
+            <p class="form-note">
+              Open JobPilot Autofill in Chrome and choose <strong>Connect JobPilot</strong>. Then
+              create a pairing code here and paste it into the extension.
+            </p>
+            <p aria-live="polite" class="form-note" id="extensionConnectionStatus">
+              Open the extension to start a connection.
+            </p>
+            <details class="extension-manual">
+              <summary>Manual connection</summary>
+              <label for="extensionId">Extension ID</label>
+              <input
+                autocomplete="off"
+                id="extensionId"
+                maxlength="32"
+                pattern="[a-p]{32}"
+                spellcheck="false"
+              />
+            </details>
+            <div class="extension-actions">
+              <button class="button primary" disabled="" id="createExtensionPairing" type="button">
+                Create pairing code
+              </button>
+              <button class="button secondary" id="refreshExtensionConnections" type="button">
+                Refresh connections
+              </button>
+            </div>
+            <div class="extension-code" hidden="" id="extensionPairing">
+              <label for="extensionPairingCode">One-use pairing code</label>
+              <div class="extension-code-row">
+                <input
+                  autocomplete="off"
+                  id="extensionPairingCode"
+                  readonly=""
+                  spellcheck="false"
+                />
+                <button class="button secondary" id="copyExtensionCode" type="button">
+                  Copy code
+                </button>
+              </div>
+              <p class="form-note" id="extensionPairingHelp">
+                Paste this code into JobPilot Autofill in Chrome.
+              </p>
+            </div>
+            <div aria-live="polite" class="extension-connections" id="extensionConnections"></div>
+          </div>
+        </section>
       </section>
     </main>
     <dialog aria-labelledby="modalTitle" class="modal" id="modal">

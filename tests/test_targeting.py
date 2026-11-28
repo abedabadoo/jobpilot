@@ -87,6 +87,18 @@ def test_ordinary_security_and_compliance_roles_remain_available(title):
 
 
 @pytest.mark.parametrize(
+    "title",
+    [
+        "Security Advisor I, Falcon Complete (Remote)",
+        "Tier 1 SOC Analyst",
+        "Incident Response Analyst",
+    ],
+)
+def test_security_operations_titles_reach_the_opportunity_pipeline(title):
+    assert assess(title)[0] == "eligible"
+
+
+@pytest.mark.parametrize(
     "requirement",
     [
         "Minimum of 5+ years of information security, IT audit or IT Risk Management experience.",

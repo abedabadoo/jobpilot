@@ -257,6 +257,7 @@
   function sortedJobs(jobs) {
     return [...jobs].sort(
       (a, b) =>
+        (Number(a.priority_tier) || 0) - (Number(b.priority_tier) || 0) ||
         bucket(a) - bucket(b) ||
         (fitNumber(b) || 0) - (fitNumber(a) || 0) ||
         (Date.parse(b.posted_at) || 0) - (Date.parse(a.posted_at) || 0),
@@ -337,21 +338,205 @@
     });
     return link;
   }
+  async function coverLetterState(route) {
+    const response = await fetch(route, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not read the cover letter status.');
+    return response.json();
+  }
+
+  async function openCoverLetter(job, updateStatus) {
+    const route = `/api/jobs/${encodeURIComponent(job.id)}/cover-letter`;
+    let current = await coverLetterState(route);
+    if (!current.can_generate && !current.exists) throw new Error(current.message);
+    const dialog = el('dialog', 'cover-letter-dialog'),
+      container = el('div', 'cover-letter-container'),
+      heading = el('h2', '', 'Cover letter'),
+      status = el('p', 'modal-note'),
+      editor = el('textarea', 'cover-letter-editor'),
+      companyWebsite = el('input'),
+      instructions = el('input'),
+      controls = el('div', 'detail-links'),
+      save = button('Save edits and update PDF', 'secondary', 'file'),
+      generate = button('Fresh draft', 'secondary', 'file'),
+      openPDF = button('Open PDF', 'secondary', 'external'),
+      close = button('Close', 'quiet'),
+      research = el('details'),
+      preview = el('details', 'cover-letter-preview'),
+      page = el('img');
+    let working = false;
+    dialog.setAttribute('aria-label', 'Cover letter');
+    status.setAttribute('role', 'status');
+    editor.setAttribute('aria-label', 'Cover letter wording');
+    companyWebsite.type = 'url';
+    companyWebsite.maxLength = 1800;
+    instructions.maxLength = 3000;
+    page.alt = 'Rendered cover letter page';
+    research.append(el('summary', '', 'Research sources'));
+    preview.append(el('summary', '', 'PDF preview'), page);
+    const field = (label, input) => {
+      const wrapper = el('label', 'cover-letter-field', label);
+      wrapper.append(input);
+      return wrapper;
+    };
+    controls.append(save, generate, openPDF, close);
+    container.append(
+      heading,
+      el('p', 'modal-note', `${job.title} at ${job.company}`),
+      status,
+      editor,
+      field('Official website or article (optional)', companyWebsite),
+      field('AI rewrite instructions (optional)', instructions),
+      controls,
+      research,
+      preview,
+    );
+    dialog.append(container);
+    document.body.append(dialog);
+    const dirty = () => editor.value !== (current.draft?.text || '');
+    function enableControls() {
+      dialog.setAttribute('aria-busy', String(working));
+      close.disabled = working;
+      editor.readOnly = working;
+      save.disabled = working || !current.draft;
+      generate.disabled = working || !current.can_generate;
+      openPDF.disabled = working || !current.pdf;
+    }
+    function show(result) {
+      current = result;
+      status.textContent = result.message;
+      editor.value = result.draft?.text || '';
+      generate.textContent = result.exists ? 'Fresh draft' : 'Generate Cover Letter';
+      const info = result.draft?.research || {};
+      if (!companyWebsite.value.trim() && info.company_url) companyWebsite.value = info.company_url;
+      research.replaceChildren(
+        el('summary', '', 'Research sources'),
+        el('p', 'modal-note', info.message || 'Research appears after generation.'),
+      );
+      const sources = [...(info.sources || [])];
+      if (info.hiring_manager)
+        sources.push({
+          title: `Hiring contact · ${info.hiring_manager.name}`,
+          url: info.hiring_manager.url,
+        });
+      sources.forEach((source) => {
+        const link = el('a', '', source.title);
+        const url = safeURL(source.url);
+        if (!url) return;
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        const row = el('p');
+        row.append(link);
+        if (source.published) row.append(document.createTextNode(` · ${source.published}`));
+        if (source.url === result.draft?.source_used?.url)
+          row.append(document.createTextNode(' · used in letter'));
+        research.append(row);
+        if (source.excerpt) research.append(el('p', 'modal-note', source.excerpt));
+      });
+      preview.hidden = !result.pdf;
+      preview.firstElementChild.textContent = result.ready ? 'PDF preview' : 'Previous PDF';
+      if (result.pdf) page.src = `${route}/preview?revision=${result.revision}`;
+      enableControls();
+      updateStatus?.(result);
+    }
+    async function monitor(task) {
+      while (task?.state === 'running') {
+        status.textContent = task.message;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const result = await coverLetterState(route);
+        task = result.task;
+        if (task?.state === 'ready') return result;
+      }
+      throw new Error(task?.message || 'The cover letter task was interrupted. Try again.');
+    }
+    async function submit(action) {
+      if (working) return;
+      const replacing = current.exists || dirty();
+      if (
+        action === 'generate' &&
+        replacing &&
+        !window.confirm(
+          'Replace the current wording, including unsaved changes, when a new draft passes its checks?',
+        )
+      )
+        return;
+      working = true;
+      status.textContent =
+        action === 'generate'
+          ? 'Researching and drafting with ResumeForge. This can take several minutes.'
+          : 'Saving your wording and checking the PDF…';
+      enableControls();
+      try {
+        let result = await api(route, {
+          action,
+          revision: current.revision,
+          confirmed: replacing,
+          text: editor.value,
+          instructions: instructions.value,
+          company_url: companyWebsite.value.trim(),
+        });
+        if (result.task?.state === 'running') result = await monitor(result.task);
+        show(result);
+        if (result.ready) preview.open = true;
+      } catch (error) {
+        status.textContent = friendlyMessage(
+          error.message,
+          'The cover letter operation did not complete.',
+        );
+      } finally {
+        working = false;
+        enableControls();
+      }
+    }
+    function closeEditor() {
+      if (!working && (!dirty() || window.confirm('Discard unsaved wording changes?')))
+        dialog.close();
+    }
+    close.addEventListener('click', closeEditor);
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeEditor();
+    });
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    save.addEventListener('click', () => submit('save'));
+    generate.addEventListener('click', () => submit('generate'));
+    openPDF.addEventListener('click', async () => {
+      try {
+        await api('/api/artifact/open', { path: current.pdf });
+      } catch (error) {
+        status.textContent = friendlyMessage(error.message, 'Could not open the cover letter PDF.');
+      }
+    });
+    show(current);
+    dialog.showModal();
+    if (current.task?.state === 'running') {
+      working = true;
+      enableControls();
+      monitor(current.task)
+        .then(show)
+        .catch((error) => {
+          status.textContent = error.message;
+        })
+        .finally(() => {
+          working = false;
+          enableControls();
+        });
+    } else if (!current.exists && current.can_generate) submit('generate');
+  }
+
   function documentEntries(job) {
     const names = {
-      resumeforge_pdf: 'ResumeForge PDF',
-      resume_pdf: 'Resume PDF',
-      resume_docx: 'Resume Word',
-      cover_pdf: 'Cover letter PDF',
-      cover_docx: 'Cover letter Word',
+      resumeforge_pdf: 'Resume PDF',
+      resumeforge_cover_pdf: 'Cover letter PDF',
     };
     return artifactEntries(job.documents || job.application?.documents)
       .filter(
         ([key, path]) =>
-          (key !== 'resumeforge_pdf' || job.resumeforge?.current !== false) &&
+          key in names &&
+          job.resumeforge?.current !== false &&
           typeof path === 'string' &&
           /^(?:[A-Za-z]:[\\/]|\/)/.test(path) &&
-          /\.(?:pdf|docx)$/i.test(path),
+          /\.pdf$/i.test(path),
       )
       .map(([key, path]) => [names[key] || path.split(/[\\/]/).pop(), path]);
   }
@@ -486,13 +671,13 @@
     $('heartbeat').textContent = relative(worker.heartbeat);
     $('searchNow').disabled = !connected;
     $('workerExtra').replaceChildren(
-      el('span', '', 'Document preparation'),
+      el('span', '', 'ResumeForge'),
       el(
         'strong',
         '',
-        worker.model_status
-          ? friendlyMessage(worker.model_status, 'Local model status unavailable')
-          : 'Uses your saved career facts',
+        worker.current
+          ? `Building ${text(worker.current, 'resume')}`
+          : 'Starts at 80% fit; the model loads only when needed',
       ),
     );
   }
@@ -810,7 +995,7 @@
       form.elements.namedItem('folder').value = text(email.mailbox ?? email.folder, 'INBOX');
       form.elements.namedItem('enabled').checked = email.enabled ?? true;
     }
-    const busy = ['checking', 'syncing'].includes(sync.state);
+    const busy = ['checking', 'syncing', 'researching'].includes(sync.state);
     form.querySelector('[type=submit]').disabled = busy || !connected;
     $('syncEmail').disabled = busy || !connected;
     $('emailStatus').textContent = friendlyMessage(
@@ -834,6 +1019,10 @@
         ['Opportunities added', sync.imported ?? 0],
         ['Already saved', sync.existing ?? 0],
         ['Filtered', sync.filtered ?? 0],
+        ['Postings verified', sync.researched ?? 0],
+        ['Awaiting research', sync.awaiting_research ?? 0],
+        ['Unverified postings', sync.unverified ?? 0],
+        ['Closed postings', sync.closed ?? 0],
       ].forEach(([label, value]) => {
         const item = el('div');
         item.append(el('span', '', label), el('strong', '', value));
@@ -844,7 +1033,7 @@
           el(
             'p',
             'truncated-warning',
-            `Checked ${number(sync.messages_checked ?? 0)} of ${number(sync.messages_available ?? 0)} recent messages; increase the scan limit in Advanced.`,
+            `Checked ${number(sync.messages_checked ?? 0)} of ${number(sync.messages_available ?? 0)} eligible messages. Sync again to continue or leave automatic scanning on.`,
           ),
         );
     }
@@ -908,30 +1097,34 @@
   async function poll() {
     if (polling) return;
     polling = true;
+    const request = new AbortController();
+    const timeout = setTimeout(() => request.abort(), 10000);
     try {
-      const [response, issues] = await Promise.all([
-        fetch('/api/state', { cache: 'no-store' }),
-        fetch('/api/problems', { cache: 'no-store' }).catch(() => null),
-      ]);
+      const response = await fetch('/api/state?include_keywords=false', {
+        cache: 'no-store',
+        signal: request.signal,
+      });
       if (!response.ok) throw new Error('The local service is unavailable.');
       const result = await response.json();
       if (!result || !Array.isArray(result.jobs))
         throw new Error('Dashboard data is not ready yet.');
       state = result;
       connected = true;
-      try {
-        const data = issues?.ok ? await issues.json() : null;
-        problemsAvailable = Array.isArray(data?.problems);
-        if (problemsAvailable) problemItems = data.problems;
-      } catch (_) {
-        problemsAvailable = false;
-      }
+      problemsAvailable = Array.isArray(result.problems);
+      if (problemsAvailable) problemItems = result.problems;
       $('connectionDot').className = 'dot teal';
       $('connectionLabel').textContent = 'Local service connected';
-      $('serviceBanner').hidden = true;
-      $('lastUpdated').textContent =
-        `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date())}`;
-      render();
+      try {
+        render();
+        $('lastUpdated').textContent =
+          `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date())}`;
+        $('serviceBanner').hidden = true;
+      } catch (error) {
+        console.error('JobPilot dashboard could not render the latest data.', error);
+        $('serviceBanner').hidden = false;
+        $('serviceBanner').textContent =
+          'JobPilot is connected, but the dashboard could not display the latest update. It will retry automatically.';
+      }
     } catch (_) {
       connected = false;
       $('connectionDot').className = 'dot amber';
@@ -946,6 +1139,7 @@
       $('monitorDot').className = 'dot amber';
       renderNextSearch();
     } finally {
+      clearTimeout(timeout);
       polling = false;
     }
   }
@@ -1279,6 +1473,7 @@
   function showJob(id) {
     const job = state?.jobs.find((item) => String(item.id) === String(id));
     if (!job) return;
+    const busy = ['preparing', 'applying', 'submitting'].includes(job.status);
     const content = openModal(text(job.title, 'Opportunity details'), 'REVIEW & PREPARE', true);
     selectedJob = job.id;
     content.dataset.jobId = String(job.id);
@@ -1313,33 +1508,81 @@
       links.append(apply);
     }
     content.append(links);
+    if (job.source === 'email') {
+      const research = job.alert_research || {};
+      const labels = {
+        pending: 'Waiting to verify the full posting.',
+        unverified: 'The public link did not provide a full posting.',
+        closed: 'The employer’s posting has closed.',
+        duplicate: 'This role is already saved from the employer’s job board.',
+        verified: `Posting verified from ${text(job.posting_source, 'the public listing')}.`,
+      };
+      const status = labels[research.state] || (job.description_missing ? labels.pending : '');
+      if (status) content.append(el('p', 'modal-note', status));
+      if (
+        job.description_missing &&
+        !busy &&
+        !isApplied(job) &&
+        ['queued', 'needs_review', 'review_required'].includes(job.status)
+      ) {
+        const retry = button('Research posting', 'secondary', 'search');
+        retry.addEventListener('click', () =>
+          action(
+            retry,
+            `/api/jobs/${encodeURIComponent(job.id)}/email/research`,
+            {},
+            'Research started.',
+          ),
+        );
+        links.append(retry);
+      }
+    }
     const keywordSection = el('section', 'detail-section');
-    keywordSection.append(el('h3', '', 'Keywords from the job posting'));
-    const keywords = job.keywords || {},
-      terms =
+    const keywordResults = el('div');
+    keywordSection.append(el('h3', '', 'Keywords from the job posting'), keywordResults);
+    content.append(keywordSection);
+    function renderKeywords(keywords) {
+      const terms =
         Array.isArray(keywords.terms) && keywords.terms.length
           ? keywords.terms
           : [...(keywords.tools || []), ...(keywords.skills || [])];
-    const unique = [...new Set(terms.filter((term) => typeof term === 'string' && term.trim()))],
-      chips = el('div', 'keyword-chips');
-    unique.forEach((term) => {
-      const matched = (keywords.matched || []).some(
-        (value) => String(value).toLowerCase() === term.toLowerCase(),
+      const unique = [...new Set(terms.filter((term) => typeof term === 'string' && term.trim()))],
+        chips = el('div', 'keyword-chips');
+      unique.forEach((term) => {
+        const matched = (keywords.matched || []).some(
+          (value) => String(value).toLowerCase() === term.toLowerCase(),
+        );
+        const chip = el('span', `keyword-chip ${matched ? 'matched' : ''}`, term);
+        if (matched) chip.title = 'Also present in your saved profile';
+        chips.append(chip);
+      });
+      keywordResults.replaceChildren(
+        unique.length
+          ? chips
+          : el('p', 'modal-note', 'Keywords will appear after the job description is assessed.'),
       );
-      const chip = el('span', `keyword-chip ${matched ? 'matched' : ''}`, term);
-      if (matched) chip.title = 'Also present in your saved profile';
-      chips.append(chip);
-    });
-    keywordSection.append(
-      unique.length
-        ? chips
-        : el('p', 'modal-note', 'Keywords will appear after the job description is assessed.'),
-    );
-    content.append(keywordSection);
+    }
+    if (job.keywords) {
+      renderKeywords(job.keywords);
+    } else {
+      keywordResults.append(el('p', 'modal-note', 'Reading posting keywords…'));
+      fetch(`/api/jobs/${encodeURIComponent(job.id)}/keywords`, { cache: 'no-store' })
+        .then((response) => {
+          if (!response.ok) throw new Error('Keywords unavailable');
+          return response.json();
+        })
+        .then((keywords) => {
+          if (keywordSection.isConnected) renderKeywords(keywords);
+        })
+        .catch(() => {
+          if (keywordSection.isConnected)
+            keywordResults.textContent = 'Could not read posting keywords.';
+        });
+    }
     const docs = el('section', 'detail-section document-section');
     docs.append(
-      el('h3', '', 'Your application documents'),
-      el('p', 'modal-note', 'Built from your saved career facts. Review them before applying.'),
+      el('h3', '', 'ResumeForge documents'),
+      el('p', 'modal-note', 'Generate a cover letter after the resume passes its checks.'),
     );
     const entries = documentEntries(job),
       downloads = el('div', 'artifact-links');
@@ -1367,42 +1610,49 @@
     });
     if (entries.length) docs.append(downloads);
     else docs.append(el('p', 'document-empty', 'No documents generated for this role yet.'));
-    const busy = ['preparing', 'applying', 'submitting'].includes(job.status),
-      prepare = button(
-        busy
-          ? 'Generating documents…'
-          : entries.length
-            ? 'Regenerate documents'
-            : 'Generate documents',
-        'primary',
-        'file',
-      );
-    prepare.disabled = busy;
-    prepare.addEventListener('click', async () => {
-      const result = await action(
-        prepare,
-        `/api/jobs/${encodeURIComponent(job.id)}/prepare`,
-        {},
-        'Document generation requested.',
-      );
-      if (result) showJob(job.id);
-    });
-    docs.append(prepare);
     const forge = el('div', 'resumeforge-section');
     forge.append(
       el('h3', '', 'ResumeForge'),
       el(
         'p',
         'modal-note',
-        'Edit this posting with your saved ResumeForge profile. Add its checked PDF here when it is ready.',
+        'Roles at 80% fit build automatically. Use Sync after editing a checked resume.',
       ),
     );
     const forgeControls = el('div', 'detail-links'),
+      forgeProfile = button('ResumeForge profile', 'secondary', 'file'),
       forgeOpen = button('Open in ResumeForge', 'secondary', 'external'),
-      forgeUse = button('Use checked PDF', 'secondary', 'file'),
-      forgeStatus = el('p', 'modal-note', 'Checking ResumeForge…');
+      forgeUse = button('Sync ResumeForge PDFs', 'secondary', 'file'),
+      forgeStatus = el('p', 'modal-note', 'Checking ResumeForge…'),
+      coverButton = button('Generate Cover Letter', 'secondary', 'file'),
+      coverStatus = el('p', 'modal-note', 'A checked resume is required for a cover letter.');
+    coverButton.disabled = true;
+    function updateCoverStatus(result) {
+      if (!forge.isConnected) return;
+      coverButton.textContent = result.exists ? 'Edit Cover Letter' : 'Generate Cover Letter';
+      coverButton.disabled = !result.exists && !result.can_generate;
+      coverStatus.textContent = result.message;
+    }
+    coverButton.addEventListener('click', async () => {
+      coverButton.disabled = true;
+      try {
+        await openCoverLetter(job, updateCoverStatus);
+      } catch (error) {
+        dialogError(error);
+      } finally {
+        refreshForge();
+      }
+    });
     let forgeRefreshTimer;
     forgeUse.disabled = true;
+    forgeProfile.addEventListener('click', async () => {
+      await action(
+        forgeProfile,
+        '/api/resumeforge/profile/open',
+        {},
+        'Opened ResumeForge profile.',
+      );
+    });
     forgeOpen.addEventListener('click', async () => {
       const result = await action(
         forgeOpen,
@@ -1421,8 +1671,8 @@
       );
       if (result && selectedJob === job.id && $('modal').open) showJob(job.id);
     });
-    forgeControls.append(forgeOpen, forgeUse);
-    forge.append(forgeControls, forgeStatus);
+    forgeControls.append(forgeProfile, forgeOpen, forgeUse, coverButton);
+    forge.append(forgeControls, forgeStatus, coverStatus);
     docs.append(forge);
     content.append(docs);
     async function refreshForge() {
@@ -1435,6 +1685,8 @@
         if (!forge.isConnected || selectedJob !== job.id) return;
         const messages = {
           no_description: 'Add the full posting before opening it in ResumeForge.',
+          setup_required:
+            'Save a complete profile and model settings with ResumeForge profile. This resume will then start automatically.',
           not_opened: 'Open this role in ResumeForge to start.',
           not_built: 'Build and review the resume in ResumeForge, then return here.',
           building: 'ResumeForge is building the resume.',
@@ -1446,11 +1698,20 @@
           failed: 'The latest ResumeForge build did not finish. Try again there.',
           invalid: 'JobPilot could not verify the latest ResumeForge PDF.',
           ready: result.attached
-            ? 'ResumeForge PDF is already available with this role.'
-            : 'Checked PDF ready. Choose Use checked PDF to add it to this role.',
+            ? 'Checked resume ready.'
+            : 'Checked PDF ready. Sync it to add it to this role.',
         };
         forgeStatus.textContent = messages[result.status] || 'ResumeForge status is unavailable.';
-        forgeUse.disabled = result.status !== 'ready' || Boolean(result.attached);
+        forgeOpen.disabled = result.status === 'setup_required';
+        forgeUse.disabled = result.status !== 'ready';
+        if (result.status === 'ready') {
+          const cover = await coverLetterState(
+            `/api/jobs/${encodeURIComponent(job.id)}/cover-letter?summary=true`,
+          );
+          updateCoverStatus(cover);
+        } else {
+          coverButton.disabled = true;
+        }
       } catch (_) {
         if (forge.isConnected) {
           forgeStatus.textContent =
@@ -1627,7 +1888,7 @@
     const form = event.currentTarget,
       fields = form.elements,
       payload = {};
-    ['location', 'ollama_url', 'model'].forEach((key) => {
+    ['location'].forEach((key) => {
       payload[key] = fields.namedItem(key).value.trim();
     });
     ['search_interval_minutes', 'min_fit'].forEach((key) => {

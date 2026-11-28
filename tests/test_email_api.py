@@ -421,3 +421,114 @@ def test_open_job_link_does_not_wait_for_document_preparation(email_api, monkeyp
     finally:
         release.set()
         thread.join(2)
+
+
+def test_research_carries_large_batches_forward_and_only_verified_posts_can_build(
+    email_api, monkeypatch
+):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    alerts = [
+        {
+            "url": f"https://example.com/jobs/{n}",
+            "title": "Security Engineer",
+            "company": "Fictional Employer",
+            "source": "email",
+            "location": "Cincinnati, OH",
+        }
+        for n in range(8)
+    ]
+    checkpoint = {"validity": 22, "uid": 50}
+    monkeypatch.setattr(
+        collectors, "sync_email", lambda conf: {**result(alerts), "checkpoint": checkpoint}
+    )
+    calls = []
+
+    def posting(url):
+        calls.append(url)
+        return {
+            **next(alert for alert in alerts if alert["url"] == url),
+            "description": "Build AWS IAM controls, use Python on Linux and maintain SOC 2 security controls.",
+        }
+
+    monkeypatch.setattr(collectors, "fetch_job", posting)
+    client.post("/api/email/sync", headers=headers, json={})
+    status = wait_done(client)
+    assert status["imported"] == 8 and status["researched"] == 6
+    assert status["awaiting_research"] == 2
+    assert service.store.get("_email_checkpoint")["cursor"] == checkpoint
+    waiting = [job for job in service.store.jobs() if job["description_missing"]]
+    assert all(not service._automatic_resume_due({**job, "fit": 100}) for job in waiting)
+    assert any(service._automatic_resume_due(job) for job in service.store.jobs())
+    assert service._research_email_batch() == 2
+    assert len(calls) == len(set(calls)) == 8
+    assert all(job["alert_research"]["state"] == "verified" for job in service.store.jobs())
+
+
+def test_failed_staging_keeps_the_previous_mail_cursor(email_api, monkeypatch):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    monkeypatch.setattr(
+        collectors,
+        "sync_email",
+        lambda conf: {**result(), "checkpoint": {"validity": 5, "uid": 10}},
+    )
+
+    def interrupted(*_):
+        raise OSError("simulated database failure")
+
+    monkeypatch.setattr(service, "_stage_email_alerts", interrupted)
+    client.post("/api/email/sync", headers=headers, json={})
+    assert wait_done(client)["state"] == "error"
+    assert service.store.get("_email_checkpoint") is None
+
+
+def test_automatic_inbox_scan_runs_while_job_board_searches_are_paused(email_api, monkeypatch):
+    service, _, _ = email_api
+    assert service.settings()["search_enabled"] is False
+    service.store.set("email_sync", {"state": "connected"})
+    waits = iter([False, True])
+    requests = []
+    monkeypatch.setattr(service.stop_event, "wait", lambda seconds: next(waits))
+    monkeypatch.setattr(service, "_start_email", requests.append)
+    service.email_monitor_loop()
+    assert requests == ["syncing"]
+
+
+def test_manual_posting_research_requires_no_inbox_login(email_api, monkeypatch):
+    service, client, headers = email_api
+    from jobpilot import collectors
+
+    service.store.set("settings", {**service.settings(), "email": {}})
+    job = service.store.add_job(
+        {
+            "source": "email",
+            "url": "https://example.com/jobs/manual-research",
+            "company": "Fictional Employer",
+            "title": "Security Engineer",
+            "status": "needs_review",
+            "description_missing": True,
+            "alert_research": {"state": "unverified", "attempts": 3},
+        }
+    )
+    monkeypatch.setattr(
+        collectors,
+        "fetch_job",
+        lambda url: {
+            "url": url,
+            "title": job["title"],
+            "company": job["company"],
+            "location": "Cincinnati, OH",
+            "description": "Build AWS IAM controls, use Python on Linux and maintain SOC 2 security controls.",
+        },
+    )
+    response = client.post(f"/api/jobs/{job['id']}/email/research", headers=headers, json={})
+    assert response.status_code == 202
+    service.email_task_running.wait(timeout=1)
+    deadline = time.monotonic() + 4
+    while service.email_task_running.is_set() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert service.store.get_job(job["id"])["alert_research"]["state"] == "verified"
+    assert client.get("/api/email/status").json()["state"] == "not_connected"

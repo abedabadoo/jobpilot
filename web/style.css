@@ -1099,6 +1099,51 @@ option {
 .settings-panel > .form-grid {
   padding: 0 24px 24px;
 }
+.extension-panel {
+  margin-top: 24px;
+}
+.extension-body {
+  padding: 0 24px 24px;
+}
+.extension-body > * + * {
+  margin-top: 16px;
+}
+.extension-manual summary {
+  cursor: pointer;
+  font-size: 14px;
+}
+.extension-manual label,
+.extension-code label {
+  display: block;
+  color: #fff;
+  font-size: 14px;
+  margin: 12px 0 8px;
+}
+.extension-manual input,
+.extension-code input {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+}
+.extension-actions,
+.extension-code-row,
+.extension-connection {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.extension-code-row input {
+  flex: 1;
+  min-width: 230px;
+}
+.extension-connection {
+  justify-content: space-between;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.extension-connection strong {
+  color: #fff;
+}
 .email-panel {
   margin-bottom: 22px;
 }
@@ -1388,6 +1433,70 @@ option {
     min-width: 810px;
   }
 }
+@media (max-width: 1150px) {
+  .jobs-table,
+  .jobs-table tbody {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+  .jobs-table thead {
+    display: none;
+  }
+  .jobs-table tr {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    padding: 16px 14px;
+    border-top: 1px solid var(--border);
+  }
+  .jobs-table td {
+    display: block;
+    min-width: 0 !important;
+    max-width: none;
+    border: 0;
+    padding: 7px 5px;
+  }
+  .jobs-table td:first-child {
+    grid-column: span 6;
+    width: 100%;
+    padding-bottom: 12px;
+  }
+  .jobs-table td:nth-child(2),
+  .jobs-table td:nth-child(3) {
+    grid-column: span 3;
+  }
+  .jobs-table td:nth-child(n + 4) {
+    grid-column: span 2;
+  }
+  .jobs-table td .button {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 6px;
+    font-size: 13px;
+    gap: 5px;
+  }
+  .jobs-table .button svg {
+    width: 14px;
+    height: 14px;
+  }
+  .job-title {
+    font-size: 16px;
+  }
+  .fit-cell {
+    justify-content: flex-end;
+  }
+  .fit-cell:before {
+    content: 'Fit';
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .jobs-table .freshness {
+    font-size: 13px !important;
+  }
+  #view-applied .freshness:before {
+    content: 'Applied ';
+  }
+}
 @media (max-width: 850px) {
   .sidebar {
     width: 220px;
@@ -1522,73 +1631,11 @@ option {
   .queue-toolbar select {
     width: 100%;
   }
-  .jobs-table,
-  .jobs-table tbody {
-    display: block;
-    min-width: 0;
-    width: 100%;
-  }
-  .jobs-table thead {
-    display: none;
-  }
-  .jobs-table tr {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    padding: 14px 10px;
-    border-top: 1px solid var(--border);
-  }
-  .jobs-table td {
-    display: block;
-    min-width: 0 !important;
-    max-width: none;
-    border: 0;
-    padding: 7px 5px;
-  }
-  .jobs-table td:first-child {
-    grid-column: span 6;
-    width: 100%;
-    padding-bottom: 12px;
-  }
-  .jobs-table td:nth-child(2),
-  .jobs-table td:nth-child(3) {
-    grid-column: span 3;
-  }
-  .jobs-table td:nth-child(n + 4) {
-    grid-column: span 2;
-  }
-  .jobs-table td .button {
-    width: 100%;
-    min-height: 40px;
-    padding: 8px 6px;
-    font-size: 13px;
-    gap: 5px;
-  }
-  .jobs-table .button svg {
-    width: 14px;
-    height: 14px;
-  }
-  .job-title {
-    font-size: 16px;
-  }
   .job-sub {
     font-size: 13px;
   }
-  .fit-cell {
-    justify-content: flex-end;
-  }
-  .fit-cell:before {
-    content: 'Fit';
-    font-size: 13px;
-    color: var(--muted);
-  }
   .fit-bar {
     width: 35px;
-  }
-  .jobs-table .freshness {
-    font-size: 13px !important;
-  }
-  #view-applied .freshness:before {
-    content: 'Applied ';
   }
   .queue-footer {
     padding: 15px 16px;
@@ -1717,4 +1764,34 @@ option {
     scroll-behavior: auto !important;
     transition: none !important;
   }
+}
+
+.cover-letter-dialog {
+  width: min(820px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+.cover-letter-container {
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+}
+
+.cover-letter-editor {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.cover-letter-field {
+  display: grid;
+  gap: 4px;
+}
+
+.cover-letter-preview img {
+  display: block;
+  width: min(100%, 660px);
+  height: auto;
+  margin: 12px auto;
 }

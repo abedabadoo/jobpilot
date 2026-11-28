@@ -18,6 +18,7 @@ def integration(tmp_path, monkeypatch):
     master = tmp_path / "resumeforge-master"
     master_draft(master)
     monkeypatch.setattr(service.resumeforge_bridge, "master_workspace", lambda: master)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     executable = tmp_path / "ResumeForge.exe"
     executable.write_bytes(b"app")
     monkeypatch.setattr(service.resumeforge_bridge, "desktop_executable", lambda: executable)
@@ -61,6 +62,23 @@ def test_open_role_requires_session_and_preserves_master_workspace(integration):
     assert service.store.get_job(job["id"])["status"] == "needs_review"
 
 
+def test_missing_profile_status_directs_user_to_profile_editor(integration):
+    service, client, _, job, _, _ = integration
+    workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+    service.store.update_job(
+        job["id"],
+        resumeforge={
+            "status": "setup_required",
+            "workspace": workspace.name,
+            "master_revision": "",
+        },
+    )
+    assert client.get(f"/api/jobs/{job['id']}/resumeforge/status").json() == {
+        "status": "setup_required",
+        "attached": False,
+    }
+
+
 def test_status_and_use_attach_only_checked_pdf_without_changing_tracking(integration):
     service, client, headers, job, _, _ = integration
     base = f"/api/jobs/{job['id']}/resumeforge"
@@ -78,10 +96,9 @@ def test_status_and_use_attach_only_checked_pdf_without_changing_tracking(integr
     assert saved["status"] == "needs_review"
     assert saved["note"] == "Original review note"
     assert saved.get("applied") is not True
-    assert saved["documents"]["resume_pdf"] == "existing.pdf"
-    assert saved["documents"]["cover_pdf"] == "cover.pdf"
+    assert set(saved["documents"]) == {"resumeforge_pdf"}
     pdf = saved["documents"]["resumeforge_pdf"]
-    assert pdf.startswith(str(service.DATA / "applications"))
+    assert pdf.startswith(str(Path.home() / "Downloads" / "JobPilot RF Docs"))
     assert hashlib.sha256(open(pdf, "rb").read()).hexdigest() == saved["resumeforge"]["sha256"]
     assert saved["application"]["documents"]["resumeforge_pdf"] == pdf
     download = client.get("/api/artifact", params={"path": pdf})
@@ -101,7 +118,7 @@ def test_incomplete_or_changed_resume_cannot_attach(integration):
     folder = run_result(workspace, "b" * 32, status="needs_content")
     response = client.post(base + "/use", json={}, headers=headers)
     assert response.status_code == 409
-    assert "ready" in response.json()["detail"].lower()
+    assert "review" in response.json()["detail"].lower()
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
     result["status"] = "ready"
     (folder / "result.json").write_text(json.dumps(result), encoding="utf-8")
@@ -126,7 +143,57 @@ def test_missing_attached_copy_can_be_restored_from_checked_run(integration):
     assert Path(attached).is_file()
 
 
-def test_normal_document_regeneration_keeps_resumeforge_pdf(integration, monkeypatch):
+def test_same_title_sync_keeps_resumes_and_cover_letters_posting_specific(integration):
+    service, client, headers, first, _, _ = integration
+    second = service.store.add_job(
+        {
+            **first,
+            "id": None,
+            "url": "https://jobs.example.com/43",
+            "description": "A separate posting for the same employer and title.",
+            "documents": {},
+            "resumeforge": {},
+            "application": {},
+        }
+    )
+
+    def checked(job, run_id, pdf=b"%PDF-1.4\noriginal resume\n"):
+        workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
+        folder = run_result(workspace, run_id, pdf=pdf)
+        report_file = folder / "result.json"
+        report = json.loads(report_file.read_text(encoding="utf-8"))
+        report["profile"] = {"name": "Fictional Candidate", "contact": "candidate@example.invalid"}
+        report_file.write_text(json.dumps(report), encoding="utf-8")
+
+    for index, job in enumerate((first, second), start=1):
+        base = f"/api/jobs/{job['id']}/resumeforge"
+        assert client.post(base + "/open", json={}, headers=headers).status_code == 200
+        checked(job, str(index) * 32)
+    first_context = service.resumeforge_bridge.cover_workspace(service.DATA, first)
+    letter_pdf = b"%PDF-1.4\nfirst posting cover\n"
+    first_context._commit(0, first_context._draft_record("Saved draft", {}), letter_pdf)
+
+    for job in (first, second):
+        response = client.post(f"/api/jobs/{job['id']}/resumeforge/use", json={}, headers=headers)
+        assert response.status_code == 200
+
+    first_saved = service.store.get_job(first["id"])["documents"]
+    second_saved = service.store.get_job(second["id"])["documents"]
+    assert first_saved["resumeforge_pdf"] != second_saved["resumeforge_pdf"]
+    assert "resumeforge_cover_pdf" in first_saved
+    assert "resumeforge_cover_pdf" not in second_saved
+
+    checked(first, "3" * 32, b"%PDF-1.4\nregenerated resume\n")
+    first_route = f"/api/jobs/{first['id']}/resumeforge/use"
+    assert client.post(first_route, json={}, headers=headers).status_code == 200
+    saved = service.store.get_job(first["id"])
+    assert saved["documents"] == {"resumeforge_pdf": str(first_context.resume)}
+    assert saved["application"]["documents"] == saved["documents"]
+    assert first_context.letter.read_bytes() == letter_pdf
+    assert not service.resumeforge_bridge.cover_workspace(service.DATA, first).state()["current"]
+
+
+def test_document_regeneration_uses_resumeforge_only(integration, monkeypatch):
     service, client, headers, job, _, _ = integration
     base = f"/api/jobs/{job['id']}/resumeforge"
     client.post(base + "/open", json={}, headers=headers)
@@ -135,19 +202,14 @@ def test_normal_document_regeneration_keeps_resumeforge_pdf(integration, monkeyp
     assert client.post(base + "/use", json={}, headers=headers).status_code == 200
     path = service.store.get_job(job["id"])["documents"]["resumeforge_pdf"]
     monkeypatch.setattr(
-        service,
-        "prepare",
-        lambda *args: {
-            "resume_pdf": "new-jobpilot.pdf",
-            "cover_pdf": "new-cover.pdf",
-            "generation_mode": "fixture",
-            "generation_note": "Fixture documents",
-        },
+        service.resumeforge_bridge,
+        "build_resume",
+        lambda *args: {"status": "ready", "path": path},
     )
     service.prepare_job(job["id"])
     saved = service.store.get_job(job["id"])
-    assert saved["documents"]["resume_pdf"] == "new-jobpilot.pdf"
     assert saved["documents"]["resumeforge_pdf"] == path
+    assert set(saved["documents"]) == {"resumeforge_pdf"}
     assert saved["application"]["documents"]["resumeforge_pdf"] == path
 
 
@@ -162,8 +224,9 @@ def test_tampered_attached_copy_is_not_treated_as_checked(integration):
     attached.write_bytes(b"%PDF-1.4\ntampered\n")
     assert client.get(base + "/status").json() == {"status": "ready", "attached": False}
     response = client.post(base + "/use", json={}, headers=headers)
-    assert response.status_code == 409
-    assert response.json()["detail"] != "ResumeForge PDF is already on this role."
+    assert response.status_code == 200
+    assert response.json()["already_attached"] is False
+    assert attached.read_bytes() == (workspace / "runs" / ("e" * 32) / "resume.pdf").read_bytes()
 
 
 def test_import_preserves_receipt_added_during_pdf_verification(integration, monkeypatch):
@@ -187,19 +250,20 @@ def test_import_preserves_receipt_added_during_pdf_verification(integration, mon
     assert service.store.get_job(job["id"])["application"]["receipt"] == "confirmed-123"
 
 
-def test_import_rejects_redirected_application_folder(integration):
+def test_import_rejects_redirected_downloads_folder(integration):
     service, client, headers, job, _, _ = integration
     base = f"/api/jobs/{job['id']}/resumeforge"
     client.post(base + "/open", json={}, headers=headers)
     workspace = service.resumeforge_bridge.workspace_path(service.DATA, job)
     run_result(workspace, "0" * 32)
-    outside = service.DATA.parent / "outside-applications"
+    outside = service.DATA.parent / "outside-documents"
     outside.mkdir()
-    applications = service.DATA / "applications"
-    if applications.exists():
-        pytest.skip("Applications directory already exists")
+    downloads = Path.home() / "Downloads" / "JobPilot RF Docs"
+    downloads.parent.mkdir(parents=True, exist_ok=True)
+    if downloads.exists():
+        pytest.skip("Downloads document directory already exists")
     try:
-        applications.symlink_to(outside, target_is_directory=True)
+        downloads.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("Creating symlinks is unavailable")
     response = client.post(base + "/use", json={}, headers=headers)
@@ -222,17 +286,13 @@ def test_changed_posting_marks_older_resumeforge_document_outdated(integration):
 def test_regeneration_preserves_receipt_added_during_document_build(integration, monkeypatch):
     service, _, _, job, _, _ = integration
 
-    def prepare(*_):
+    def build_resume(*_):
         current = service.store.get_job(job["id"])
         service.store.update_job(
             job["id"], application={**current["application"], "receipt": "confirmed-456"}
         )
-        return {
-            "resume_pdf": "new-jobpilot.pdf",
-            "generation_mode": "fixture",
-            "generation_note": "Fixture documents",
-        }
+        return {"status": "ready", "path": "new-resumeforge.pdf"}
 
-    monkeypatch.setattr(service, "prepare", prepare)
+    monkeypatch.setattr(service.resumeforge_bridge, "build_resume", build_resume)
     service.prepare_job(job["id"])
     assert service.store.get_job(job["id"])["application"]["receipt"] == "confirmed-456"

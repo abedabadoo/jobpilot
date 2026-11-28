@@ -1,11 +1,20 @@
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .core import BUCKET_LABELS, TZ, canonical_url, freshness, parse_date, rank_key
+from .core import (
+    BUCKET_LABELS,
+    TZ,
+    canonical_url,
+    experience_priority,
+    freshness,
+    parse_date,
+    rank_key,
+)
 
 
 class Store:
@@ -29,8 +38,17 @@ class Store:
             c.execute("INSERT OR IGNORE INTO job_id_sequence(id,highwater) VALUES(1,0)")
             self._preserve_job_ids(c)
 
+    @contextmanager
     def connect(self):
-        return sqlite3.connect(self.path, timeout=15)
+        # sqlite3.Connection.__exit__ commits/rolls back but does NOT close.
+        # Explicit close avoids exhausting macOS file descriptors during
+        # bulk updates such as the first-run ResumeForge profile import.
+        connection = sqlite3.connect(self.path, timeout=15)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     @staticmethod
     def now():
@@ -150,6 +168,16 @@ class Store:
             )
 
     def _refresh(self, connection, job_id, existing, incoming):
+        if incoming.get("source") == "email" and incoming.get("description_missing"):
+            # A later digest must not downgrade verified text or reopen a
+            # posting whose public source has confirmed it is closed.
+            research = (existing.get("alert_research") or {}).get("state")
+            if research in {"verified", "closed", "duplicate"} or (
+                existing.get("description")
+                and not existing.get("description_missing")
+                and existing.get("source") != "email"
+            ):
+                return self.decorate(job_id, existing)
         # Discovery can improve the exact requisition route even after a resume
         # has been prepared. State and receipt evidence remain authoritative.
         for key in ["source_url", "apply_url"]:
@@ -237,6 +265,7 @@ class Store:
         p = dict(payload, id=job_id)
         p["bucket"] = freshness(p.get("posted_at"))
         p["bucket_label"] = BUCKET_LABELS[p["bucket"]]
+        p["priority_tier"] = experience_priority(p)
         return p
 
     def jobs(self):

@@ -10,12 +10,10 @@ import pytest
 from playwright.sync_api import expect, sync_playwright
 
 PDF_BYTES = b"%PDF-1.4\n% JobPilot document download fixture\n%%EOF\n"
-RESUME_PATH = "C:/JobPilot-fixture/applications/resume.pdf"
+RESUME_PATH = "C:/JobPilot-fixture/JobPilot RF Docs/Northstar Labs - Cloud Security Engineer/Alnajjar_Resume.pdf"
 DOCUMENTS = {
-    "resume_pdf": RESUME_PATH,
-    "resume_docx": "C:/JobPilot-fixture/applications/resume.docx",
-    "cover_pdf": "C:/JobPilot-fixture/applications/cover-letter.pdf",
-    "cover_docx": "C:/JobPilot-fixture/applications/cover-letter.docx",
+    "resumeforge_pdf": RESUME_PATH,
+    "resumeforge_cover_pdf": "C:/JobPilot-fixture/JobPilot RF Docs/Northstar Labs - Cloud Security Engineer/Alnajjar_CoverLetter.pdf",
 }
 
 
@@ -84,11 +82,15 @@ def dashboard():
         "category": "documents",
         "resolved": False,
     }
+    # Keep the problem stale when a poll races a successful resolution.
+    state["problems"] = [problem]
     control = {
         "calls": [],
         "held": [],
         "hold_state": False,
         "problem_reads": 0,
+        "keyword_reads": 0,
+        "state_status": 200,
         "resolve_status": 200,
         "open_status": 200,
         "downloads": downloads,
@@ -107,7 +109,21 @@ def dashboard():
         if path == "/api/session":
             result = {"token": "fixture-token"}
         elif path == "/api/state":
-            result = state
+            status = control["state_status"]
+            result = (
+                {
+                    **state,
+                    "jobs": [
+                        {k: v for k, v in row.items() if k != "keywords"} if row else row
+                        for row in state["jobs"]
+                    ],
+                }
+                if status == 200
+                else {"detail": "Fixture service error."}
+            )
+        elif path == "/api/jobs/1/keywords":
+            control["keyword_reads"] += 1
+            result = job["keywords"]
         elif path == "/api/problems":
             control["problem_reads"] += 1
             # Deliberately stale, as a poll started before resolution can be.
@@ -160,7 +176,7 @@ def dashboard():
             control["hold_state"] = False
             held, control["held"] = control["held"], []
             for route in held:
-                route.fulfill(content_type="application/json", body=json.dumps(state))
+                route_api(route)
 
         control.update(page=page, state=state, hold_poll=hold_poll, release_poll=release_poll)
         try:
@@ -178,16 +194,40 @@ def test_resolving_problem_updates_immediately_and_ignores_stale_background_poll
     page.get_by_role("button", name="Problems", exact=True).click()
     expect(page.locator("#problemsList .problem-card")).to_have_count(1)
     dashboard["hold_poll"]()
-    assert dashboard["problem_reads"] >= 2
+    assert dashboard["problem_reads"] == 0
     page.get_by_role("button", name="Mark resolved", exact=True).click()
     expect(page.locator("#problemsList .problem-card")).to_have_count(0, timeout=1000)
     expect(page.get_by_role("heading", name="No problems to review")).to_be_visible()
     assert ("/api/problems/10/resolve", {}) in dashboard["calls"]
-    dashboard["state"]["worker"]["model_status"] = "Background refresh completed."
+    dashboard["state"]["worker"]["current"] = "Cloud Security Engineer"
     dashboard["release_poll"]()
-    expect(page.locator("#workerExtra")).to_contain_text("Background refresh completed.")
+    expect(page.locator("#workerExtra")).to_contain_text("Building Cloud Security Engineer")
     expect(page.locator("#problemsList .problem-card")).to_have_count(0)
     expect(page.locator("#problemsNavCount")).to_be_hidden()
+
+
+def test_dashboard_distinguishes_render_errors_from_service_errors(dashboard):
+    page = dashboard["page"]
+    jobs = dashboard["state"]["jobs"]
+    dashboard["state"]["jobs"] = [None]
+    expect(page.locator("#serviceBanner")).to_contain_text("could not display", timeout=5000)
+    expect(page.locator("#connectionLabel")).to_have_text("Local service connected")
+
+    dashboard["state_status"] = 503
+    expect(page.locator("#connectionLabel")).to_have_text("Local service unavailable", timeout=5000)
+
+    dashboard["state_status"] = 200
+    dashboard["state"]["jobs"] = jobs
+    expect(page.locator("#connectionLabel")).to_have_text("Local service connected", timeout=5000)
+    expect(page.locator("#serviceBanner")).to_be_hidden()
+
+
+def test_dashboard_only_reads_keywords_when_a_role_is_opened(dashboard):
+    page = dashboard["page"]
+    assert dashboard["keyword_reads"] == 0
+    page.get_by_role("button", name="Review", exact=True).click()
+    expect(page.locator("#modal .keyword-chip", has_text="AWS")).to_be_visible()
+    assert dashboard["keyword_reads"] == 1
 
 
 def test_failed_resolution_keeps_the_problem_available_to_retry(dashboard):
@@ -204,10 +244,8 @@ def test_failed_resolution_keeps_the_problem_available_to_retry(dashboard):
 @pytest.mark.parametrize(
     ("label", "key"),
     [
-        ("Resume PDF", "resume_pdf"),
-        ("Resume Word", "resume_docx"),
-        ("Cover letter PDF", "cover_pdf"),
-        ("Cover letter Word", "cover_docx"),
+        ("Resume PDF", "resumeforge_pdf"),
+        ("Cover letter PDF", "resumeforge_cover_pdf"),
     ],
 )
 def test_opening_each_document_dispatches_without_waiting_for_background_poll(
@@ -246,3 +284,57 @@ def test_resume_download_returns_file_bytes_without_opening_another_tab(dashboar
     assert Path(download.path()).read_bytes() == PDF_BYTES
     assert dashboard["downloads"] == [RESUME_PATH]
     assert len(page.context.pages) == 1
+
+
+def test_cover_letter_only_requests_generation_after_click(dashboard):
+    page = dashboard["page"]
+    route = "**/api/jobs/1/cover-letter*"
+    requests = []
+    draft = {"text": "Dear Hiring Team,\n\nExisting wording.", "research": {"sources": []}}
+    state = {
+        "revision": 0,
+        "can_generate": True,
+        "exists": False,
+        "pdf": None,
+        "ready": False,
+        "message": "Generate a cover letter for this checked resume.",
+    }
+
+    def cover(request):
+        if request.request.method == "POST":
+            payload = request.request.post_data_json
+            requests.append(payload)
+            revision = state["revision"] + 1
+            if payload["action"] == "save":
+                draft["text"] = payload["text"]
+            state.update(
+                exists=True,
+                ready=True,
+                revision=revision,
+                draft=draft,
+                message="Cover letter ready.",
+            )
+        request.fulfill(json=state)
+
+    page.route(
+        "**/api/jobs/1/resumeforge/status",
+        lambda r: r.fulfill(json={"status": "ready", "attached": True}),
+    )
+    page.route(route, cover)
+    page.get_by_role("button", name="Review", exact=True).click()
+    generate = page.get_by_role("button", name="Generate Cover Letter", exact=True)
+    expect(generate).to_be_enabled()
+    assert not requests
+    generate.click()
+    editor = page.get_by_role("dialog", name="Cover letter")
+    expect(editor.get_by_text("Cover letter ready.")).to_be_visible()
+    expect(editor.get_by_label("Cover letter wording")).to_have_value(draft["text"])
+    assert [event["action"] for event in requests] == ["generate"]
+    editor.get_by_role("button", name="Fresh draft").click()
+    assert len(requests) == 1  # The confirmation is dismissed by default.
+    revised = "Dear Hiring Team,\n\nRevised wording."
+    editor.get_by_label("Cover letter wording").fill(revised)
+    with page.expect_response(lambda response: response.request.method == "POST"):
+        editor.get_by_role("button", name="Save edits and update PDF").click()
+    expect(editor.get_by_label("Cover letter wording")).to_have_value(revised)
+    assert [event["action"] for event in requests] == ["generate", "save"]
