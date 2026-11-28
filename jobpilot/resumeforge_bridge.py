@@ -304,6 +304,7 @@ def cover_workspace(data_dir: Path, job: dict):
         _job_description(job),
         ModelSettings.model_validate(saved.get("settings") or {}),
         _posting_url(job),
+        fast_default=True,
     )
 
 

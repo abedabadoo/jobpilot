@@ -357,7 +357,7 @@
       instructions = el('input'),
       controls = el('div', 'detail-links'),
       save = button('Save edits and update PDF', 'secondary', 'file'),
-      generate = button('Fresh AI draft', 'secondary', 'file'),
+      generate = button('Fresh draft', 'secondary', 'file'),
       openPDF = button('Open PDF', 'secondary', 'external'),
       close = button('Close', 'quiet'),
       research = el('details'),
@@ -405,7 +405,7 @@
       current = result;
       status.textContent = result.message;
       editor.value = result.draft?.text || '';
-      generate.textContent = result.exists ? 'Fresh AI draft' : 'Generate Cover Letter';
+      generate.textContent = result.exists ? 'Fresh draft' : 'Generate Cover Letter';
       const info = result.draft?.research || {};
       if (!companyWebsite.value.trim() && info.company_url) companyWebsite.value = info.company_url;
       research.replaceChildren(

@@ -101,7 +101,8 @@ def test_laptop_letter_fits_achievements_from_new_checked_resume(
         context.company,
         title,
         posting,
-        context.settings.model_copy(update={"strategy": "laptop"}),
+        ModelSettings(provider="none"),
+        fast_default=True,
     )
     monkeypatch.setattr(letters, "research", lambda *args: {"sources": [], "hiring_manager": None})
     monkeypatch.setattr(
@@ -419,7 +420,11 @@ def test_jobpilot_api_uses_shared_draft_and_preview(checked_run, tmp_path, monke
     assert client.get(route).json()["draft"] is None
     assert not context.letter.exists()
     assert client.post(route, json={"action": "generate", "revision": 0}).status_code == 403
-    generated = client.post(route, headers=token, json={"action": "generate", "revision": 0})
+    generated = client.post(
+        route,
+        headers=token,
+        json={"action": "generate", "revision": 0, "instructions": "Focus on release automation."},
+    )
     assert generated.status_code == 202, generated.text
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:

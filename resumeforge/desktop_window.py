@@ -762,7 +762,7 @@ class MainWindow(QMainWindow):
         posting = self.job_posting_url or saved.get("job_posting_url", "")
         return LetterWorkspace(self.data_dir, self.run_dir, self._resume_destination(),
                                self.job_company, self.job_title, self.job.toPlainText(),
-                               self._current_settings(), posting)
+                               self._current_settings(), posting, fast_default=True)
 
     def _refresh_cover_status(self):
         if not self._can_export():

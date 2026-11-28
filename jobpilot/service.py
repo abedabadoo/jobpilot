@@ -2005,7 +2005,7 @@ def change_cover_letter(job_id: int, body: dict):
             "instructions": str(body.get("instructions") or "")[:3000],
             "company_url": str(body.get("company_url") or "")[:1800].strip(),
         }
-        workspace.check_generation(revision, options["confirmed"])
+        workspace.check_generation(revision, options["confirmed"], options["instructions"])
     except (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error) as exc:
         raise HTTPException(409, str(exc)) from exc
     with cover_task_lock:

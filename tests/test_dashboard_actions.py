@@ -330,7 +330,7 @@ def test_cover_letter_only_requests_generation_after_click(dashboard):
     expect(editor.get_by_text("Cover letter ready.")).to_be_visible()
     expect(editor.get_by_label("Cover letter wording")).to_have_value(draft["text"])
     assert [event["action"] for event in requests] == ["generate"]
-    editor.get_by_role("button", name="Fresh AI draft").click()
+    editor.get_by_role("button", name="Fresh draft").click()
     assert len(requests) == 1  # The confirmation is dismissed by default.
     revised = "Dear Hiring Team,\n\nRevised wording."
     editor.get_by_label("Cover letter wording").fill(revised)

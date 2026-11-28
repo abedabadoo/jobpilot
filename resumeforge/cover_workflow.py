@@ -341,6 +341,7 @@ class LetterWorkspace:
     description: str
     settings: ModelSettings
     posting_url: str = ""
+    fast_default: bool = False
 
     def __post_init__(self):
         self.workspace = self.workspace.resolve()
@@ -489,17 +490,22 @@ class LetterWorkspace:
                 issue, pdf = str(exc), None
             return self._commit(revision, {**draft, "text": text, "manually_edited": True, "issue": issue}, pdf)
 
-    def check_generation(self, expected_revision, confirmed):
+    def _use_fast_draft(self, instructions):
+        return (self.fast_default or self.settings.strategy == "laptop") and not instructions.strip()
+
+    def check_generation(self, expected_revision, confirmed, instructions=""):
         revision, previous = self._stored()
         if revision != expected_revision:
             raise ValueError("The cover letter changed in another window. Reopen it before generating.")
         if (previous or self.letter.exists()) and not confirmed:
             raise ValueError("Confirm replacing the current cover letter with a fresh AI draft.")
+        self._recheck()
+        if self._use_fast_draft(instructions):
+            return revision, previous
         if self.settings.provider == "none" or not self.settings.model.strip():
             raise ValueError("Configure a local model in ResumeForge before generating a cover letter.")
         if urlsplit(self.settings.base_url).hostname not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("Cover letters require a local ResumeForge model endpoint.")
-        self._recheck()
         return revision, previous
 
     def _measured_letter(self, evidence, sources, path):
@@ -559,7 +565,7 @@ class LetterWorkspace:
         raise ValueError("The checked resume has too little distinct experience to fill a one-page cover letter.")
 
     def generate(self, expected_revision, *, confirmed=False, instructions="", company_url="", progress=None):
-        revision, previous = self.check_generation(expected_revision, confirmed)
+        revision, previous = self.check_generation(expected_revision, confirmed, instructions)
         # A full letter and its factual review use longer completions than a
         # resume bullet rewrite on the bundled CPU-only model.
         settings = self.settings
@@ -567,7 +573,7 @@ class LetterWorkspace:
             settings = settings.model_copy(update={"timeout_seconds": max(690, settings.timeout_seconds)})
         announce = progress or (lambda _: None)
         announce("Researching the company and job posting…")
-        quick = settings.strategy == "laptop" and not instructions.strip()
+        quick = self._use_fast_draft(instructions)
         if quick:
             results = Queue(maxsize=1)
             Thread(target=lambda: results.put(research(

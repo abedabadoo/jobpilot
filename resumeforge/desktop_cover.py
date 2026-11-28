@@ -75,7 +75,7 @@ class CoverEditor(QDialog):
         controls = QHBoxLayout()
         self.save_button = QPushButton("Save edits and update PDF")
         self.save_button.clicked.connect(self.save)
-        self.rewrite = QPushButton("Fresh AI draft")
+        self.rewrite = QPushButton("Fresh draft")
         self.rewrite.clicked.connect(self.generate)
         self.open_pdf = QPushButton("Open PDF")
         self.open_pdf.clicked.connect(self.open_current_pdf)
@@ -95,7 +95,7 @@ class CoverEditor(QDialog):
         self.editor.setReadOnly(self.busy)
         self.save_button.setEnabled(not self.busy and self.state.get("draft") is not None)
         self.rewrite.setEnabled(not self.busy and self.state["can_generate"])
-        self.rewrite.setText("Fresh AI draft" if self.state["exists"] else "Generate Cover Letter")
+        self.rewrite.setText("Fresh draft" if self.state["exists"] else "Generate Cover Letter")
         self.open_pdf.setEnabled(not self.busy and bool(self.state["pdf"]))
 
     @Slot(object)
