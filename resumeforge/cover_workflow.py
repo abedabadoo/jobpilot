@@ -11,9 +11,11 @@ import json
 import math
 import os
 from pathlib import Path
+from queue import Empty, Queue
 import re
 import sqlite3
 import tempfile
+from threading import Thread
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -335,6 +337,7 @@ class LetterWorkspace:
         self.digest = _digest(pdf)
         self.name = result["profile"]["name"]
         self.contact = result["profile"]["contact"]
+        self.employers = {role["id"]: role["company"] for role in result["profile"].get("roles", [])}
         report = result["report"]
         self.template = Template.model_validate(report.get("template", {}))
         self.resume_examples = report.get("inspiration_bullets") or []
@@ -481,6 +484,43 @@ class LetterWorkspace:
         self._recheck()
         return revision, previous
 
+    def _measured_letter(self, evidence, sources, path):
+        visible = clean(evidence).casefold()
+        focus, role = _words(self.description), _words(self.title)
+        selected = json.loads((self.run / "selected.json").read_text(encoding="utf-8"))
+        ranked = {}
+        for bullet in selected:
+            sentence = clean(bullet["text"])
+            if sentence and sentence.casefold() in visible:
+                terms = _words(sentence)
+                ranked[sentence] = (len(terms & focus) + 3 * len(terms & role),
+                                    self.employers.get(bullet["role_id"], ""))
+        opening = f"I am applying for the {self.title} position at {self.company}."
+        closing = ("I would welcome a conversation about the team's priorities for this role "
+                   "and where I could contribute first.")
+        paragraphs = []
+        for sentence, (_, employer) in sorted(ranked.items(), key=lambda item: -item[1][0]):
+            if not sentence.startswith("I "):
+                sentence = f"I {sentence[0].lower()}{sentence[1:]}"
+            if employer and (not paragraphs or paragraphs[-1][0] != employer):
+                sentence = f"At {employer}, {sentence}"
+            if not sentence.endswith((".", "!", "?")):
+                sentence += "."
+            paragraphs.append((employer, sentence))
+            if len(paragraphs) < 3:
+                continue
+            body = [opening]
+            for i in range(0, len(paragraphs), 2):
+                body.append(" ".join(text for _, text in paragraphs[i:i+2]))
+            draft = LetterProse.model_construct(paragraphs=[*body, closing], source_number=0)
+            text = _merge_text(self, draft, sources)
+            if _layout(self, text)[1].bottom_gap < -.1:
+                paragraphs.pop()
+                continue
+            if _typeset(self, text, path)["full_page_passed"]:
+                return text
+        raise ValueError("The checked resume has too little distinct experience to fill a one-page cover letter.")
+
     def generate(self, expected_revision, *, confirmed=False, instructions="", company_url="", progress=None):
         revision, previous = self.check_generation(expected_revision, confirmed)
         # A full letter and its factual review use longer completions than a
@@ -490,12 +530,29 @@ class LetterWorkspace:
             settings = settings.model_copy(update={"timeout_seconds": max(690, settings.timeout_seconds)})
         announce = progress or (lambda _: None)
         announce("Researching the company and job posting…")
-        sources = research(self.company, self.description, self.posting_url, company_url)
+        quick = settings.strategy == "laptop" and not instructions.strip()
+        if quick:
+            results = Queue(maxsize=1)
+            Thread(target=lambda: results.put(research(
+                self.company, self.description, self.posting_url, company_url)), daemon=True).start()
+            try:
+                sources = results.get(timeout=8)
+            except Empty:
+                sources = {"sources": [], "hiring_manager": None, "company_url": company_url,
+                           "message": "Company research did not finish before the draft deadline."}
+        else:
+            sources = research(self.company, self.description, self.posting_url, company_url)
         with pdfplumber.open(BytesIO(self._pdf)) as pdf:
             evidence = pdf.pages[0].extract_text() or ""
         evidence = evidence.replace(self.name, "", 1).replace(self.contact, "", 1).strip()
         if not evidence:
             raise ValueError("The checked resume has no extractable experience text.")
+        if quick:
+            announce("Fitting role-relevant accomplishments from the checked resume…")
+            with tempfile.TemporaryDirectory(prefix="rf-letter-") as temporary:
+                path = Path(temporary) / LETTER_NAME
+                text = self._measured_letter(evidence, sources, path)
+                return self._commit(revision, self._draft_record(text, sources), path.read_bytes())
         rendered_examples = _relevant_rendered_examples(
             self.resume_examples, evidence, self.description, title=self.title
         )

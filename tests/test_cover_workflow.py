@@ -78,6 +78,42 @@ def passing_prose(context, tmp_path):
     pytest.fail("Test wording could not fit the fixed template")
 
 
+@pytest.mark.parametrize(
+    ("title", "posting"),
+    [
+        ("Release Engineer", "Maintain deployment pipelines and automate release workflows."),
+        ("Incident Coordinator", "Investigate alerts and coordinate first-response escalation."),
+    ],
+)
+def test_laptop_letter_fits_achievements_from_new_checked_resume(
+    context, monkeypatch, title, posting
+):
+    profile = Profile.model_validate_json(
+        (Path(letters.__file__).with_name("data") / "abu.profile.json").read_text()
+    )
+    new_run = context.workspace / "runs" / ("2" * 32)
+    result = run(RunRequest(profile=profile, job_description=posting), new_run)
+    assert result["status"] == "ready"
+    context = letters.LetterWorkspace(
+        context.workspace,
+        new_run,
+        context.resume,
+        context.company,
+        title,
+        posting,
+        context.settings.model_copy(update={"strategy": "laptop"}),
+    )
+    monkeypatch.setattr(letters, "research", lambda *args: {"sources": [], "hiring_manager": None})
+    monkeypatch.setattr(
+        letters, "call_json", Mock(side_effect=AssertionError("unexpected inference"))
+    )
+    state = context.generate(0)
+    assert state["ready"]
+    assert state["draft"]["resume_sha256"] == sha256(context.resume.read_bytes()).hexdigest()
+    pages = PdfReader(context.letter).pages
+    assert len(pages) == 1 and title in pages[0].extract_text()
+
+
 def test_letter_generation_edit_reopen_and_stale_resume(context, tmp_path, monkeypatch):
     draft, research = passing_prose(context, tmp_path)
     monkeypatch.setattr(letters, "research", lambda *args: research)

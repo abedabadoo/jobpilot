@@ -80,4 +80,8 @@ Saving an address alone does not authorize inbox access. JobPilot will report an
 
 ## Updating and backup
 
+For a prebuilt Windows update, extract the Windows ZIP and double-click
+`Install-JobPilot-Windows.cmd`. The installer reuses the saved data location
+and waits for JobPilot's worker before replacing the application.
+
 Pause searches, stop the worker, and wait for ResumeForge preparation to finish before maintenance. Back up the data directory while services are stopped, including the SQLite database and its associated files. Rebuild and rerun the installer using the same installation and data paths. A normal upgrade stages and validates a clean service runtime before replacing the old one, replaces only application-owned code/binary folders, and preserves `DataRoot`. `-SkipDependencies` explicitly reuses an existing compatible runtime during a repair. Do not overwrite or delete data to repair application code.

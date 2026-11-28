@@ -42,6 +42,45 @@ jobs:
           name: distributions
           path: dist/*
 
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -e ".[build]"
+      - name: Build and verify the Windows installer
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          ./scripts/Build-JobPilot.ps1 -BuildPython $python
+          $install = Join-Path $env:RUNNER_TEMP JobPilot-Smoke
+          ./scripts/Install-JobPilot.ps1 -Python $python -InstallRoot $install
+          $state = Join-Path $install 'data/preserve.txt'
+          Set-Content -LiteralPath $state -Value 'keep'
+          ./scripts/Install-JobPilot.ps1 -Python $python -InstallRoot $install -SkipDependencies
+          if ((Get-Content -LiteralPath $state) -ne 'keep') { throw 'Update lost user data' }
+          $report = Join-Path $env:RUNNER_TEMP jobpilot-diagnostic.json
+          $result = Start-Process (Join-Path $install JobPilot.exe) -ArgumentList '--diagnose', '--report', $report -Wait -PassThru
+          if ($result.ExitCode -ne 0 -or !(Test-Path -LiteralPath $report)) { throw 'Installed desktop did not report diagnostics' }
+      - name: Assemble the downloadable update
+        shell: pwsh
+        run: |
+          git archive --format=zip --output=JobPilot-Windows-source.zip HEAD
+          Expand-Archive -Path JobPilot-Windows-source.zip -DestinationPath windows-update
+          $payload = New-Item -ItemType Directory -Path windows-update/build/desktop-dist -Force
+          Copy-Item -LiteralPath build/desktop-dist/JobPilot -Destination $payload.FullName -Recurse
+          Copy-Item scripts/Install-JobPilot-Windows.cmd windows-update
+          Compress-Archive -Path windows-update/* -DestinationPath JobPilot-Windows-x64.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: JobPilot-Windows-x64
+          path: JobPilot-Windows-x64.zip
+
   frontend:
     runs-on: ubuntu-latest
     steps:

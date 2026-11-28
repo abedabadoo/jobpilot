@@ -1205,14 +1205,17 @@ def control(body: dict):
             worker["searching"]
             or worker["submitting"]
             or worker["current"]
+            or email_task_running.is_set()
+            or _cover_letter_running()
             or not application_lock.acquire(blocking=False)
         ):
             raise HTTPException(
                 409, "Wait for the current application or search before restarting the service."
             )
         try:
-            conf.update(search_enabled=False, submission_enabled=False)
-            store.set("settings", conf)
+            if body.get("preserve_preferences") is not True:
+                conf.update(search_enabled=False, submission_enabled=False)
+                store.set("settings", conf)
             store.event("Service gracefully stopped for maintenance; queue retained.")
             stop_event.set()
             if server_instance:
@@ -1944,6 +1947,13 @@ def _cover_workspace(job_id):
 
 cover_task_lock = threading.Lock()
 cover_tasks = {}
+
+
+def _cover_letter_running():
+    with cover_task_lock:
+        return any(task["state"] == "running" for task in cover_tasks.values())
+
+
 cover_preview_lock = threading.Lock()
 
 

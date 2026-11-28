@@ -11,7 +11,13 @@ $ErrorActionPreference = 'Stop'
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
 if (-not $BuildRoot) { $BuildRoot = Join-Path $SourceRoot 'build\desktop-dist\JobPilot' }
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
-if (-not $DataRoot) { $DataRoot = Join-Path $InstallRoot 'data' }
+if (-not $DataRoot) {
+    $existingPaths = Join-Path $InstallRoot 'installed_paths.json'
+    if (Test-Path -LiteralPath $existingPaths) {
+        $DataRoot = (Get-Content -LiteralPath $existingPaths -Raw | ConvertFrom-Json).data
+    }
+    if (-not $DataRoot) { $DataRoot = Join-Path $InstallRoot 'data' }
+}
 if (-not (Test-Path -LiteralPath $Python)) { throw 'Python 3.13 is required. Install Python for this Windows user, then pass its executable with -Python.' }
 if (-not (Test-Path -LiteralPath (Join-Path $BuildRoot 'JobPilot.exe'))) { throw 'Build JobPilot.exe with Build-JobPilot.ps1 first, or pass -BuildRoot.' }
 if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot 'jobpilot\service.py'))) { throw 'The JobPilot service source is missing.' }
@@ -38,6 +44,14 @@ $runtime = Join-Path $DataRoot 'runtime'
 $runtimeStage = Join-Path $DataRoot 'runtime.next'
 $runtimePrevious = Join-Path $DataRoot 'runtime.previous'
 foreach ($path in @($runtime,$runtimeStage,$runtimePrevious)) { Assert-ManagedChild $DataRoot $path }
+$runtimeLock = Join-Path $SourceRoot 'requirements-runtime.lock'
+$runtimeFingerprint = (Get-FileHash -LiteralPath $runtimeLock -Algorithm SHA256).Hash
+$installedFingerprint = Join-Path $runtime 'requirements.sha256'
+if ((Test-Path -LiteralPath (Join-Path $runtime 'Scripts\python.exe')) -and
+    (Test-Path -LiteralPath $installedFingerprint) -and
+    ((Get-Content -LiteralPath $installedFingerprint -Raw).Trim() -eq $runtimeFingerprint)) {
+    $SkipDependencies = $true
+}
 if ($SkipDependencies) {
     $runtimePython = Join-Path $runtime 'Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $runtimePython)) {
@@ -61,6 +75,39 @@ if ($SkipDependencies) {
         if ($LASTEXITCODE -ne 0) { throw 'JobPilot runtime import check failed.' }
     } finally {
         $env:PYTHONPATH = $priorPythonPath
+    }
+    Set-Content -LiteralPath (Join-Path $runtimeStage 'requirements.sha256') -Value $runtimeFingerprint
+}
+
+$desktop = Join-Path $InstallRoot 'JobPilot.exe'
+if (Test-Path -LiteralPath $desktop) {
+    $dashboardProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'JobPilot.exe'" |
+        Where-Object { $_.ExecutablePath -eq $desktop })
+    if ($dashboardProcesses | Where-Object { $_.CommandLine -match '\-\-resumeforge-child' }) {
+        throw 'Save and close the open ResumeForge editor, then run the update again.'
+    }
+    $endpoint = 'http://127.0.0.1:8765'
+    try { $health = Invoke-RestMethod "$endpoint/api/health" -TimeoutSec 2 } catch { $health = $null }
+    if ($health -and $health.data_dir -eq $DataRoot -and $health.ok -eq $true) {
+        $token = (Invoke-RestMethod "$endpoint/api/session" -TimeoutSec 3).token
+        $deadline = [DateTime]::UtcNow.AddMinutes(2)
+        do {
+            try {
+                $reply = Invoke-RestMethod "$endpoint/api/control" -Method Post -TimeoutSec 3 `
+                    -Headers @{ 'X-JobPilot-Token' = $token } -ContentType 'application/json' `
+                    -Body '{"action":"shutdown","preserve_preferences":true}'
+                if ($reply.ok) { break }
+            } catch { Start-Sleep -Seconds 1 }
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if (Get-Process -Id $health.pid -ErrorAction SilentlyContinue) {
+            Wait-Process -Id $health.pid -Timeout 20 -ErrorAction SilentlyContinue
+            if (Get-Process -Id $health.pid -ErrorAction SilentlyContinue) {
+                throw 'JobPilot is still finishing work. The existing app is intact.'
+            }
+        }
+    }
+    foreach ($process in $dashboardProcesses) {
+        Stop-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
     }
 }
 
