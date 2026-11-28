@@ -44,6 +44,24 @@ _TRANSFER = re.compile(
     re.I,
 )
 _CLOSING = re.compile(r"^(?:thank you|I (?:would|will) (?:welcome|appreciate)|I look forward)", re.I)
+_CONTRIBUTIONS = (
+    ("deployment release rollback pipelines ci/cd reliability",
+     "I would start by walking a recent rollout and rollback with the people on call. "
+     "That would show where teams need clearer release evidence or a faster way to "
+     "decide whether to proceed, stop, or roll back."),
+    ("incident response triage detection telemetry alerts forensics",
+     "I would review recent escalations with the responders who handled them. "
+     "I would look for alerts that lacked enough context for a decision and use those "
+     "cases to test clearer routing rules and investigation playbooks."),
+    ("identity access iam authentication permissions oauth",
+     "I would start by tracing how service owners request and review access. "
+     "That would help identify where an automated check could surface excessive "
+     "permissions early and where a human reviewer still needs context."),
+    ("governance compliance audits controls risk evidence",
+     "I would trace a sample of controls from the policy to the evidence reviewers actually use. "
+     "That would help the team distinguish steps worth automating from decisions that need "
+     "an explicit owner and a documented rationale."),
+)
 
 _SYSTEM = """Write the prose for a professional one-page application letter. The application will
 typeset the header, date, greeting, and signature. Return prose paragraphs only. Speak naturally,
@@ -498,6 +516,12 @@ class LetterWorkspace:
         opening = f"I am applying for the {self.title} position at {self.company}."
         closing = ("I would welcome a conversation about the team's priorities for this role "
                    "and where I could contribute first.")
+        related = sorted(
+            ((len(focus & _words(terms)) + 2 * len(role & _words(terms)), prose)
+             for terms, prose in _CONTRIBUTIONS),
+            reverse=True,
+        )
+        contribution = next((prose for score, prose in related if score >= 2), "")
         paragraphs = []
         included = []
         for sentence, (_, employer) in sorted(ranked.items(), key=lambda item: -item[1][0]):
@@ -518,13 +542,19 @@ class LetterWorkspace:
             body = [opening]
             for i in range(0, len(paragraphs), 2):
                 body.append(" ".join(text for _, text in paragraphs[i:i+2]))
-            draft = LetterProse.model_construct(paragraphs=[*body, closing], source_number=0)
-            text = _merge_text(self, draft, sources)
-            if _layout(self, text)[1].bottom_gap < -.1:
+            fits = False
+            for extension in ([contribution], []) if contribution else ([],):
+                draft = LetterProse.model_construct(
+                    paragraphs=[*body, *extension, closing], source_number=0)
+                text = _merge_text(self, draft, sources)
+                if _layout(self, text)[1].bottom_gap < -.1:
+                    continue
+                fits = True
+                if _typeset(self, text, path)["full_page_passed"]:
+                    return text
+            if not fits:
                 paragraphs.pop()
                 continue
-            if _typeset(self, text, path)["full_page_passed"]:
-                return text
             included.append(terms)
         raise ValueError("The checked resume has too little distinct experience to fill a one-page cover letter.")
 
