@@ -127,12 +127,29 @@ def check(application: Path, report: Path, *, gui: bool = False) -> dict:
                 )
                 assert not letter_path.exists()
                 try:
-                    request(cover_route, {"action": "generate", "revision": 0}, dashboard_headers)
+                    request(
+                        cover_route,
+                        {
+                            "action": "generate",
+                            "revision": 0,
+                            "instructions": "Rewrite the opening.",
+                        },
+                        dashboard_headers,
+                    )
                 except HTTPError as error:
                     assert error.code == 409 and b"Configure a local model" in error.read()
                 else:
-                    raise AssertionError("A cover letter generated without a configured model")
+                    raise AssertionError("A custom rewrite ran without a configured model")
                 assert not letter_path.exists()
+                deadline = time.monotonic() + 60
+                request(cover_route, {"action": "generate", "revision": 0}, dashboard_headers)
+                while time.monotonic() < deadline:
+                    cover = request(cover_route)
+                    if cover["task"]["state"] != "running":
+                        break
+                    time.sleep(0.2)
+                assert cover["ready"], cover["task"]["message"]
+                assert letter_path.read_bytes().startswith(b"%PDF")
                 extension_id = "a" * 32
                 code = request(
                     "/api/extension/pairing", {"extension_id": extension_id}, dashboard_headers
