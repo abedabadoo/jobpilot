@@ -499,7 +499,12 @@ class LetterWorkspace:
         closing = ("I would welcome a conversation about the team's priorities for this role "
                    "and where I could contribute first.")
         paragraphs = []
+        included = []
         for sentence, (_, employer) in sorted(ranked.items(), key=lambda item: -item[1][0]):
+            terms = _words(sentence)
+            if any((shared := len(terms & prior)) >= 7 and shared >= .55 * min(len(terms), len(prior))
+                   for prior in included):
+                continue
             if not sentence.startswith("I "):
                 sentence = f"I {sentence[0].lower()}{sentence[1:]}"
             if employer and (not paragraphs or paragraphs[-1][0] != employer):
@@ -508,6 +513,7 @@ class LetterWorkspace:
                 sentence += "."
             paragraphs.append((employer, sentence))
             if len(paragraphs) < 3:
+                included.append(terms)
                 continue
             body = [opening]
             for i in range(0, len(paragraphs), 2):
@@ -519,6 +525,7 @@ class LetterWorkspace:
                 continue
             if _typeset(self, text, path)["full_page_passed"]:
                 return text
+            included.append(terms)
         raise ValueError("The checked resume has too little distinct experience to fill a one-page cover letter.")
 
     def generate(self, expected_revision, *, confirmed=False, instructions="", company_url="", progress=None):

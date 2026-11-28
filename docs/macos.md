@@ -8,7 +8,7 @@ The combined JobPilot and ResumeForge app uses a native Cocoa dashboard and a lo
 2. Move `JobPilot.app` to `~/Applications` or `/Applications`, then open it. Keep the app at its installed path if you enable sign-in startup.
 3. If macOS blocks an unsigned download, review its source and use **System Settings → Privacy & Security → Open Anyway**, then follow the macOS confirmation. The default CI builds are ad hoc signed, without an Apple Developer ID or notarization. A successful build does not imply Apple notarization.
 
-Alternatively, put `Install-JobPilot-macOS.command` alongside the ZIP and run `bash Install-JobPilot-macOS.command` in Terminal. It installs or updates `~/Applications/JobPilot.app` without administrator access. Quit JobPilot before updating. Your data and existing ResumeForge profile remain outside the app bundle.
+For an in-place update, keep `Install-JobPilot-macOS.command` beside the app ZIP and open the command file. It finds an existing JobPilot in Applications, waits for its worker, replaces the app, and opens the new version. On a first install it uses `~/Applications`. Save and close any open ResumeForge editor before updating. Your data and profile stay outside the app bundle.
 
 The dashboard opens without Ollama or a model. Discovery, email, manual tracking, and the ResumeForge PDF builder remain available. ResumeForge builds a resume automatically for roles scoring at least 80% fit. Cover letters are optional and created only in its editor after a resume is checked. The app does not download a model or automation browser on first launch. The Chrome autofill extension uses your signed-in Chrome session.
 
