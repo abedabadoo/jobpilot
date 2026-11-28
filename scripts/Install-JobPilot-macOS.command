@@ -28,12 +28,17 @@ fi
 mkdir -p "$HOME/Applications"
 DESTINATION_DIR="$(dirname -- "$DESTINATION")"
 SWAP="$(mktemp -d "$DESTINATION_DIR/.jobpilot-update.XXXXXX")"
-trap 'rm -rf -- "$STAGING"; rmdir -- "$SWAP" 2>/dev/null || true' EXIT
+trap 'rm -rf -- "$STAGING" "$SWAP/JobPilot.app"; rmdir -- "$SWAP" 2>/dev/null || true' EXIT
 /usr/bin/ditto "$STAGING/JobPilot.app" "$SWAP/JobPilot.app"
 /usr/bin/codesign --verify --deep --strict "$SWAP/JobPilot.app"
 
 BINARY="$DESTINATION/Contents/MacOS/JobPilot"
 BASE=http://127.0.0.1:8765
+running() {
+  local state
+  state="$(/bin/ps -p "$1" -o stat=)" || return 1
+  [[ -n "$state" && ! "$state" =~ ^[[:space:]]*Z ]]
+}
 if [[ -d "$DESTINATION" ]]; then
   if /bin/ps -axo command= | /usr/bin/awk -v bin="$BINARY" 'index($0, bin " --resumeforge-child") == 1 { found=1 } END { exit !found }'; then
     echo "Save and close the open ResumeForge editor, then run the update again."
@@ -53,10 +58,10 @@ if [[ -d "$DESTINATION" ]]; then
       sleep 1
     done
     for ((attempt=0; attempt<20; attempt++)); do
-      kill -0 "$pid" 2>/dev/null || break
+      running "$pid" || break
       sleep 1
     done
-    if kill -0 "$pid" 2>/dev/null; then
+    if running "$pid"; then
       echo "JobPilot is still finishing work. The existing app is intact."
       exit 1
     fi
